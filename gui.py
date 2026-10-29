@@ -44,6 +44,12 @@ FONT_LABELS = {
     "LiuJianMaoCao": "六剑毛笔草（草书）",
     "ZhiMangXing": "志莽行书（行书）",
     "ZCOOLKuaiLe": "站酷快乐体（卡通）",
+    "Xiaolai": "小赖字体（轻松手写）",
+    "YozaiLight": "悠哉细体（轻盈）",
+    "Yozai": "悠哉字体（随性手写）",
+    "YozaiMedium": "悠哉中等（较粗）",
+    "MarkerGothic": "霞鹜漫黑（马克笔风格）",
+    "ZhenKai": "霞鹜臻楷（楷书风格）",
 }
 # 公式字体（需要符号齐全，matplotlib mathtext 用它渲染二维公式）
 FORMULA_FONT_LABELS = {
@@ -53,6 +59,12 @@ FORMULA_FONT_LABELS = {
     "LiuJianMaoCao": "六剑毛笔草",
     "ZhiMangXing": "志莽行书",
     "ZCOOLKuaiLe": "站酷快乐体",
+    "Xiaolai": "小赖字体",
+    "YozaiLight": "悠哉细体",
+    "Yozai": "悠哉字体",
+    "YozaiMedium": "悠哉中等",
+    "MarkerGothic": "霞鹜漫黑",
+    "ZhenKai": "霞鹜臻楷",
 }
 
 

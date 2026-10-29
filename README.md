@@ -93,8 +93,19 @@ python handwriting.py 输入.md --max-pages 1
 
 ## 三、字体说明
 
+当前共 12 个选项（含悠哉的 3 个字重）。新增字体及命令行名称如下；下载来源和授权见 [字体说明](fonts/README.md)。
+
+| 字体 | `--font` 名称 | 风格 |
+| --- | --- | --- |
+| 小赖字体 | `Xiaolai` | 轻松手写 |
+| 悠哉细体 / 常规 / 中等 | `YozaiLight` / `Yozai` / `YozaiMedium` | 随性手写，不同粗细 |
+| 霞鹜漫黑 | `MarkerGothic` | 马克笔风格 |
+| 霞鹜臻楷 | `ZhenKai` | 楷书风格 |
+
+例如：`python handwriting.py 输入.md --font Xiaolai --jitter 0.2 --glyph-variation 1`。
+
 - **霞鹜文楷（WenKai）**：工整清晰，且几乎包含全部数学符号，作为默认、公式字体与符号回退基准。
-- 其余为 Google Fonts 中文手写体，风格各异（毛笔楷书 / 行书 / 草书 / 卡通），
+- 原有的其余五款为 Google Fonts 中文手写体，风格各异（毛笔楷书 / 行书 / 草书 / 卡通），
   但**缺少数学符号**（`ℏ ∂ ∇ ∫ ∑ …`）。
 - 引擎会自动检测缺字，并从霞鹜文楷中「**嫁接**」缺失字形生成 `_merged_*.ttf` 缓存，
   从而让所有风格字体都能正确显示符号。
