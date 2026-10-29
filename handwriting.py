@@ -330,20 +330,28 @@ class Renderer:
 
     def _deform_char(self, tile, size):
         """使用连续位移场和共享网格改变字内部比例，保持图块边界固定。"""
-        amplitude = size * 0.035 * min(self.jitter, 2.5)
+        bounds = tile.getbbox()
+        if bounds is None or self.jitter <= 0:
+            return tile
+        # 按实际墨迹定位形变，避免透明留白稀释字内部的变化。
+        ink_left, ink_top, ink_right, ink_bottom = bounds
+        ink_width, ink_height = ink_right - ink_left, ink_bottom - ink_top
+        amplitude = min(ink_width, ink_height, size) * 0.12 * min(self.jitter, 1.8)
         coefficients = [self.rand.uniform(-amplitude, amplitude) for _ in range(6)]
         width, height = tile.size
+        margin = max(2, size * 0.12)
 
         def source(x, y):
-            u, v = x / width, y / height
+            u = max(0.0, min(1.0, (x - ink_left + margin) / (ink_width + 2 * margin)))
+            v = max(0.0, min(1.0, (y - ink_top + margin) / (ink_height + 2 * margin)))
             envelope = math.sin(math.pi * u) * math.sin(math.pi * v)
             a, b, c, d, e, f = coefficients
             dx = envelope * (a + b * math.cos(math.pi * u) + c * math.cos(math.pi * v))
             dy = envelope * (d + e * math.cos(math.pi * u) + f * math.cos(math.pi * v))
             return x + dx, y + dy
 
-        xs = sorted(set(round(width * i / 6) for i in range(7)))
-        ys = sorted(set(round(height * i / 6) for i in range(7)))
+        xs = sorted(set(round(width * i / 10) for i in range(11)))
+        ys = sorted(set(round(height * i / 10) for i in range(11)))
         mesh = []
         for top, bottom in zip(ys, ys[1:]):
             for left, right in zip(xs, xs[1:]):
