@@ -5,6 +5,19 @@
 整体风格统一、与正文笔迹一致。文字排版基于开源库 [HandRight](https://github.com/Gsllchb/Handright)，
 公式基于 [matplotlib mathtext](https://matplotlib.org/stable/tutorials/text/mathtext.html)。
 
+完整操作步骤、示例与故障排查见 [使用说明书](使用说明书.md)，可直接试用 [示例文档](examples/示例.md)。
+
+## 快速开始
+
+安装 Python 3.9+，下载仓库并解压，保留 `fonts` 文件夹。在项目目录执行：
+
+```bash
+python -m pip install -r requirements.txt
+python gui.py
+```
+
+Windows 也可双击 `启动GUI.bat`；首次启动可能联网安装依赖。将 UTF-8 编码的 `.md`、`.markdown` 或 `.txt` 文件拖入窗口，默认在源文件旁的 `手写体` 文件夹生成 PNG。
+
 ## 目录结构
 
 ```
@@ -104,4 +117,4 @@ pip install -r requirements.txt
 ```
 
 > Python 3.9+；tkinter 随 Python 自带，Windows 上无需额外安装。
-> 公式渲染需要 matplotlib；若缺失，可加 `--no-formula` 或取消勾选公式渲染以退回纯文本。
+> matplotlib 为启动必需依赖；`--no-formula` 只关闭二维公式排版，不能代替安装 matplotlib。
