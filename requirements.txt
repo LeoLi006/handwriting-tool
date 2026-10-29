@@ -1,0 +1,6 @@
+# 手写体转换工具 依赖
+handright>=8.2.0      # 核心: 文字 -> 手写体图片
+fonttools>=4.0        # 字体符号回退合并
+pillow>=9.0           # 图片处理 / 绘制横线本背景
+matplotlib>=3.5       # 二维公式渲染 (mathtext, custom 字体)
+tkinterdnd2>=0.3      # GUI 拖拽支持 (tkinter 本身随 Python 附带)
