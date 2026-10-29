@@ -17,6 +17,7 @@ Markdown(.md) -> 手写体图片 转换引擎（混合排版）
 
 import argparse
 import copy
+import math
 import os
 import random
 import re
@@ -296,6 +297,8 @@ class Renderer:
         self.ffont = formula_font
         self.rand = random.Random(seed)
         self.jitter = max(0.0, float(jitter))   # 笔迹随机度: 0=关闭, 1=默认
+        self._writing_slant = 0.0
+        self._writing_scale = 0.0
 
         # A4 210x297mm
         self.w = int(210 / 25.4 * dpi)
@@ -325,14 +328,41 @@ class Renderer:
     def _gauss(self, sig):
         return self.rand.gauss(0, sig)
 
+    def _deform_char(self, tile, size):
+        """使用连续位移场和共享网格改变字内部比例，保持图块边界固定。"""
+        amplitude = size * 0.035 * min(self.jitter, 2.5)
+        coefficients = [self.rand.uniform(-amplitude, amplitude) for _ in range(6)]
+        width, height = tile.size
+
+        def source(x, y):
+            u, v = x / width, y / height
+            envelope = math.sin(math.pi * u) * math.sin(math.pi * v)
+            a, b, c, d, e, f = coefficients
+            dx = envelope * (a + b * math.cos(math.pi * u) + c * math.cos(math.pi * v))
+            dy = envelope * (d + e * math.cos(math.pi * u) + f * math.cos(math.pi * v))
+            return x + dx, y + dy
+
+        xs = sorted(set(round(width * i / 6) for i in range(7)))
+        ys = sorted(set(round(height * i / 6) for i in range(7)))
+        mesh = []
+        for top, bottom in zip(ys, ys[1:]):
+            for left, right in zip(xs, xs[1:]):
+                quad = (source(left, top) + source(left, bottom)
+                        + source(right, bottom) + source(right, top))
+                mesh.append(((left, top, right, bottom), quad))
+        return tile.transform(tile.size, Image.Transform.MESH, mesh,
+                              resample=Image.Resampling.BICUBIC)
+
     def _draw_char(self, ch, x, y, size):
-        """把单个字画到页面, 并施加"字形级"微扰(旋转/字号),
-        使**同一个字在每次出现时写法都略有不同**, 更像真人手写。
+        """绘制字形，叠加内部局部形变与缓慢变化的书写节奏。
         (x, y) 为该字基线左端坐标。
         """
         j = self.jitter
         if j > 0:
-            sz = max(8, int(round(size * (1 + self._gauss(0.02 * j)))))
+            self._writing_slant = 0.88 * self._writing_slant + self.rand.uniform(-0.35, 0.35)
+            self._writing_scale = 0.88 * self._writing_scale + self.rand.uniform(-0.003, 0.003)
+            sz = max(8, int(round(size * (1 + self._writing_scale * j
+                                         + self._gauss(0.012 * j)))))
         else:
             sz = size
         f = self._font(sz)
@@ -344,7 +374,9 @@ class Renderer:
         td = ImageDraw.Draw(tile)
         td.text((pad, pad + asc), ch, font=f, fill=COLOR, anchor="ls")
         if j > 0:
-            ang = self._gauss(2.6 * j)          # 轻微倾斜, 模拟手写笔势
+            if not ch.isspace():
+                tile = self._deform_char(tile, sz)
+            ang = (self._writing_slant + self._gauss(0.9)) * j
             if abs(ang) > 0.15:
                 # expand=False: 绕中心旋转, 基线位置基本不变
                 tile = tile.rotate(ang, resample=Image.BICUBIC)
