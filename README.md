@@ -1,6 +1,6 @@
-# 手写体转换器（Markdown → 手写体图片）
+# 墨笺 · 手写体转换器（Word / Markdown → 手写体图片）
 
-把 `.md`（或 `.txt`）文档自动转写成**手写体风格**的 PNG 图片（A4、横线本背景、自动分页），
+把 `.docx`、`.md` 或 `.txt` 文档自动转写成**手写体风格**的 PNG 图片（A4、横线本背景、自动分页），
 无需自己手抄。正文逐字手写，**数学公式二维排版**（真正的上下标 / 分式 / 根号 / 矩阵），
 整体风格统一、与正文笔迹一致。文字排版基于开源库 [HandRight](https://github.com/Gsllchb/Handright)，
 公式基于 [matplotlib mathtext](https://matplotlib.org/stable/tutorials/text/mathtext.html)。
@@ -16,7 +16,19 @@ python -m pip install -r requirements.txt
 python gui.py
 ```
 
-Windows 也可双击 `启动GUI.bat`；首次启动可能联网安装依赖。将 UTF-8 编码的 `.md`、`.markdown` 或 `.txt` 文件拖入窗口，默认在源文件旁的 `手写体` 文件夹生成 PNG。
+Windows 也可双击 `启动GUI.bat`；首次启动可能联网安装依赖。将 Word `.docx` 或 UTF-8 编码的 `.md`、`.markdown`、`.txt` 文件拖入窗口，默认在源文件旁的 `手写体` 文件夹生成 PNG。
+
+界面采用 Tkinter，无新增 GUI 框架。设置分组滚动，转换按钮固定可见，支持上一页 / 下一页预览。Word 导入使用 Python 标准库，不依赖 Office 或新增第三方库。
+
+## Word 转写
+
+```bash
+python handwriting.py "课堂笔记.docx" --jitter 0.2 --glyph-variation 1 -o "output"
+```
+
+支持正文、标题、列表、超链接显示文字、表格文字，并按文档顺序转写；支持原生 Word 公式中的常见分式、根号、上下标和括号。表格按行展开为文字，列表统一使用项目符号，不保留原有编号。
+
+这是内容转写，不复刻 Word 原始页面。图片、嵌入对象、图片公式、页眉页脚和原始页码不转写；图片或不支持的原生公式结构会给出提示，请检查结果。旧版 `.doc` 请先在 Word / WPS 中另存为 `.docx`；加密文件需先解除加密并另存。
 
 ## 目录结构
 
@@ -26,6 +38,7 @@ Windows 也可双击 `启动GUI.bat`；首次启动可能联网安装依赖。�
 ├── gui.py               # 图形界面（拖拽文件即可转换）
 ├── handwriting.py       # 转换引擎（混合排版）+ 命令行工具
 ├── formula.py           # LaTeX → 二维公式贴图（mathtext + 手写字体）
+├── word_reader.py       # DOCX 内容读取（仅标准库）
 ├── requirements.txt     # 依赖清单
 ├── fonts/               # 字体 + 字体注册表
 │   ├── fonts.json       # {风格名: 字体文件}

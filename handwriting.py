@@ -61,17 +61,18 @@ def _wanted(cp: int) -> bool:
 
 def _coverage(path: str) -> set:
     from fontTools.ttLib import TTFont
-    f = TTFont(path, fontNumber=0, lazy=True)
     cm = set()
-    for t in f["cmap"].tables:
-        if t.isUnicode():
-            cm |= set(t.cmap.keys())
+    with TTFont(path, fontNumber=0, lazy=True) as f:
+        for t in f["cmap"].tables:
+            if t.isUnicode():
+                cm |= set(t.cmap.keys())
     return cm
 
 
 def _has_glyf(path: str) -> bool:
     from fontTools.ttLib import TTFont
-    return "glyf" in TTFont(path, fontNumber=0, lazy=True).keys()
+    with TTFont(path, fontNumber=0, lazy=True) as f:
+        return "glyf" in f.keys()
 
 
 def _merge_fallback(base_path: str, donor_path: str, out_path: str):
@@ -574,9 +575,16 @@ def convert_file(input_path, outdir=None, *, font=None, font_size=40, dpi=150,
                  seed=20231029, ruled=True, line_spacing_ratio=1.4,
                  word_spacing=0.0, formula=True, formula_font=None,
                  jitter=1.0, glyph_variation=1.0, page=0, max_pages=0, progress=None):
-    """把 .md 文件转成手写体 PNG, 返回输出路径列表。"""
-    with open(input_path, encoding="utf-8") as f:
-        md = f.read()
+    """把 DOCX 或 UTF-8 文本转成手写体 PNG，返回输出路径列表。"""
+    extension = os.path.splitext(os.fspath(input_path))[1].lower()
+    if extension == '.doc':
+        raise ValueError('暂不支持旧版 .doc，请用 Word 或 WPS 另存为 .docx 后转换。')
+    if extension == '.docx':
+        from word_reader import read_docx
+        md = read_docx(input_path)
+    else:
+        with open(input_path, encoding="utf-8") as f:
+            md = f.read()
     if not md.strip():
         raise ValueError("文件为空")
     stem = os.path.splitext(os.path.basename(input_path))[0]
@@ -593,7 +601,7 @@ def convert_file(input_path, outdir=None, *, font=None, font_size=40, dpi=150,
 
 def main():
     ap = argparse.ArgumentParser(description="Markdown -> 手写体图片 (正文手写+公式二维)")
-    ap.add_argument("input", nargs="?", help="输入的 .md 文件")
+    ap.add_argument("input", nargs="?", help="输入的 .md / .markdown / .txt / .docx 文件")
     ap.add_argument("-o", "--outdir", default=None, help="输出目录(默认 输入文件同级/手写体)")
     ap.add_argument("--font", default=None, help="风格名 / 字体文件名 / 绝对路径")
     ap.add_argument("--list-fonts", action="store_true", help="列出所有可用风格字体")
