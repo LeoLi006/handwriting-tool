@@ -288,7 +288,7 @@ class Renderer:
     """混合排版器: 正文逐字手写 + 公式二维贴图, 自动换行/分页。"""
 
     def __init__(self, font_size, dpi, ruled, line_spacing_ratio, word_spacing,
-                 body_font, formula_font, seed, jitter=1.0):
+                 body_font, formula_font, seed, jitter=1.0, glyph_variation=1.0):
         self.size = font_size
         self.dpi = dpi
         self.ruled = ruled
@@ -296,7 +296,9 @@ class Renderer:
         self.body = body_font
         self.ffont = formula_font
         self.rand = random.Random(seed)
-        self.jitter = max(0.0, float(jitter))   # 笔迹随机度: 0=关闭, 1=默认
+        self.jitter = max(0.0, float(jitter))   # 位置、旋转和字号随机度
+        self.glyph_variation = max(0.0, float(glyph_variation))
+        self.shape_rand = random.Random(f"glyph:{seed}")
         self._writing_slant = 0.0
         self._writing_scale = 0.0
 
@@ -331,13 +333,13 @@ class Renderer:
     def _deform_char(self, tile, size):
         """使用连续位移场和共享网格改变字内部比例，保持图块边界固定。"""
         bounds = tile.getbbox()
-        if bounds is None or self.jitter <= 0:
+        if bounds is None or self.glyph_variation <= 0:
             return tile
         # 按实际墨迹定位形变，避免透明留白稀释字内部的变化。
         ink_left, ink_top, ink_right, ink_bottom = bounds
         ink_width, ink_height = ink_right - ink_left, ink_bottom - ink_top
-        amplitude = min(ink_width, ink_height, size) * 0.12 * min(self.jitter, 1.8)
-        coefficients = [self.rand.uniform(-amplitude, amplitude) for _ in range(6)]
+        amplitude = min(ink_width, ink_height, size) * 0.12 * min(self.glyph_variation, 1.8)
+        coefficients = [self.shape_rand.uniform(-amplitude, amplitude) for _ in range(6)]
         width, height = tile.size
         margin = max(2, size * 0.12)
 
@@ -381,9 +383,9 @@ class Renderer:
         tile = Image.new("RGBA", (max(1, w), max(1, h)), (0, 0, 0, 0))
         td = ImageDraw.Draw(tile)
         td.text((pad, pad + asc), ch, font=f, fill=COLOR, anchor="ls")
+        if self.glyph_variation > 0 and not ch.isspace():
+            tile = self._deform_char(tile, sz)
         if j > 0:
-            if not ch.isspace():
-                tile = self._deform_char(tile, sz)
             ang = (self._writing_slant + self._gauss(0.9)) * j
             if abs(ang) > 0.15:
                 # expand=False: 绕中心旋转, 基线位置基本不变
@@ -530,14 +532,14 @@ class Renderer:
 
 def render_markdown(md, *, font=None, font_size=40, dpi=150, seed=20231029,
                     ruled=True, line_spacing_ratio=1.4, word_spacing=0.0,
-                    formula=True, formula_font=None, jitter=1.0):
+                    formula=True, formula_font=None, jitter=1.0, glyph_variation=1.0):
     """把 markdown 文本渲染成若干页 PIL.Image, 返回 (pages, renderer)。"""
     body = pick_font(font)
     ffont = formula_font or FALLBACK
     if not os.path.exists(ffont):
         ffont = body
     r = Renderer(font_size, dpi, ruled, line_spacing_ratio, word_spacing,
-                 body, ffont, seed, jitter=jitter)
+                 body, ffont, seed, jitter=jitter, glyph_variation=glyph_variation)
     for blk in markdown_to_blocks(md):
         r.draw_block(blk, formula=formula)
     return r.pages, r
@@ -546,13 +548,14 @@ def render_markdown(md, *, font=None, font_size=40, dpi=150, seed=20231029,
 def convert_text(text, outdir, stem, *, font=None, font_size=40, dpi=150,
                  seed=20231029, ruled=True, line_spacing_ratio=1.4,
                  word_spacing=0.0, formula=True, formula_font=None,
-                 jitter=1.0, page=0, max_pages=0, progress=None):
+                 jitter=1.0, glyph_variation=1.0, page=0, max_pages=0, progress=None):
     """把 (markdown) 文本渲染成手写体 PNG, 返回输出文件路径列表。"""
     os.makedirs(outdir, exist_ok=True)
     pages, r = render_markdown(
         text, font=font, font_size=font_size, dpi=dpi, seed=seed, ruled=ruled,
         line_spacing_ratio=line_spacing_ratio, word_spacing=word_spacing,
-        formula=formula, formula_font=formula_font, jitter=jitter)
+        formula=formula, formula_font=formula_font, jitter=jitter,
+        glyph_variation=glyph_variation)
     out_paths = []
     for i, pg in enumerate(pages, 1):
         if page and i != page:
@@ -570,7 +573,7 @@ def convert_text(text, outdir, stem, *, font=None, font_size=40, dpi=150,
 def convert_file(input_path, outdir=None, *, font=None, font_size=40, dpi=150,
                  seed=20231029, ruled=True, line_spacing_ratio=1.4,
                  word_spacing=0.0, formula=True, formula_font=None,
-                 jitter=1.0, page=0, max_pages=0, progress=None):
+                 jitter=1.0, glyph_variation=1.0, page=0, max_pages=0, progress=None):
     """把 .md 文件转成手写体 PNG, 返回输出路径列表。"""
     with open(input_path, encoding="utf-8") as f:
         md = f.read()
@@ -583,7 +586,8 @@ def convert_file(input_path, outdir=None, *, font=None, font_size=40, dpi=150,
                         dpi=dpi, seed=seed, ruled=ruled,
                         line_spacing_ratio=line_spacing_ratio,
                         word_spacing=word_spacing, formula=formula,
-                        formula_font=formula_font, jitter=jitter, page=page,
+                        formula_font=formula_font, jitter=jitter,
+                        glyph_variation=glyph_variation, page=page,
                         max_pages=max_pages, progress=progress)
 
 
@@ -603,7 +607,9 @@ def main():
     ap.add_argument("--word-spacing", type=float, default=0.0,
                     help="字距(像素, 默认 0)")
     ap.add_argument("--jitter", type=float, default=1.0,
-                    help="笔迹随机度(0=每个字都一模一样, 1=默认, 可调大更有手写感)")
+                    help="位置/旋转随机度，含字号与字距抖动(0=整齐, 默认 1)")
+    ap.add_argument("--glyph-variation", type=float, default=1.0,
+                    help="独立的字形变化强度(0=关闭, 默认 1, 1.8 起达到上限)")
     ap.add_argument("--max-pages", type=int, default=0, help="最多输出几页(0=全部)")
     ap.add_argument("--page", type=int, default=0, help="只输出第几页(0=全部)")
     args = ap.parse_args()
@@ -621,7 +627,8 @@ def main():
         dpi=args.dpi, seed=args.seed, ruled=not args.no_ruled,
         formula=not args.no_formula,
         line_spacing_ratio=args.line_spacing, word_spacing=args.word_spacing,
-        jitter=args.jitter, page=args.page, max_pages=args.max_pages)
+        jitter=args.jitter, glyph_variation=args.glyph_variation,
+        page=args.page, max_pages=args.max_pages)
     print(f"完成: 共 {len(paths)} 页, 输出到 {outdir}")
 
 

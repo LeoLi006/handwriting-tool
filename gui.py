@@ -65,7 +65,7 @@ class App:
         self.q = queue.Queue()      # worker 线程 -> 主线程 的消息队列
 
         root.title("Markdown → 手写体 转换器")
-        root.geometry("920x620")
+        root.geometry("920x780")
         root.minsize(820, 560)
         root.configure(bg=BG)
 
@@ -88,9 +88,18 @@ class App:
         st.configure("TCheckbutton", background=BG)
 
     def _build_layout(self):
-        left = tk.Frame(self.root, bg=BG, width=310)
-        left.pack(side="left", fill="y", padx=(14, 6), pady=14)
-        left.pack_propagate(False)
+        panel = tk.Frame(self.root, bg=BG, width=340)
+        panel.pack(side="left", fill="y", padx=(14, 6), pady=14)
+        panel.pack_propagate(False)
+        scroll = tk.Canvas(panel, bg=BG, highlightthickness=0)
+        bar = ttk.Scrollbar(panel, orient="vertical", command=scroll.yview)
+        bar.pack(side="right", fill="y")
+        scroll.pack(side="left", fill="both", expand=True)
+        scroll.configure(yscrollcommand=bar.set)
+        left = tk.Frame(scroll, bg=BG)
+        window = scroll.create_window((0, 0), window=left, anchor="nw")
+        left.bind("<Configure>", lambda e: scroll.configure(scrollregion=scroll.bbox("all")))
+        scroll.bind("<Configure>", lambda e: scroll.itemconfigure(window, width=e.width))
 
         right = tk.Frame(self.root, bg=BG)
         right.pack(side="left", fill="both", expand=True, padx=(6, 14), pady=14)
@@ -115,10 +124,15 @@ class App:
         self.word_var = tk.DoubleVar(value=0.0)
         self._slider(left, self.word_var, -10, 16, None, step=1)
 
-        ttk.Label(left, text="⑤ 笔迹随机度（0=每字一致，1=默认）",
+        ttk.Label(left, text="⑤ 位置/旋转随机度（0=整齐）",
                   style="Head.TLabel").pack(anchor="w", pady=(10, 0))
         self.jitter_var = tk.DoubleVar(value=1.0)
         self._slider(left, self.jitter_var, 0.0, 2.5, None, step=0.1)
+
+        ttk.Label(left, text="⑥ 字形变化强度（不改变排版位置）",
+                  style="Head.TLabel").pack(anchor="w", pady=(10, 0))
+        self.glyph_variation_var = tk.DoubleVar(value=1.0)
+        self._slider(left, self.glyph_variation_var, 0.0, 1.8, None, step=0.1)
 
         self.ruled_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(left, text="横线本背景", variable=self.ruled_var).pack(anchor="w", pady=(12, 4))
@@ -256,6 +270,7 @@ class App:
             line_spacing_ratio=float(self.line_var.get()),
             word_spacing=float(self.word_var.get()),
             jitter=float(self.jitter_var.get()),
+            glyph_variation=float(self.glyph_variation_var.get()),
             formula=bool(self.formula_var.get()),
             formula_font=hw.resolve_font(
                 self.style_keys[self.fmfont_combo.current()]),
