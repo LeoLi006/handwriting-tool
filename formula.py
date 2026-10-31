@@ -208,17 +208,17 @@ _BRACED_ENVS = {"cases"}
 _MATRIX_ENVS = {"matrix", "pmatrix", "bmatrix", "vmatrix", "Bmatrix", "array"}
 
 
-def _make_brace(font_path, h, color):
+def _make_brace(font_path, h, color, char='{'):
     """用 PIL 把 '{' 缩放成高度约 h 的大括号 PNG。"""
     probe = ImageFont.truetype(font_path, 100)
-    l, t, r, b = probe.getbbox("{")
+    l, t, r, b = probe.getbbox(char)
     gh = max(1, b - t)
     size = max(12, int(round(100 * h / gh)))
     f = ImageFont.truetype(font_path, size)
-    l, t, r, b = f.getbbox("{")
+    l, t, r, b = f.getbbox(char)
     img = Image.new("RGBA", (max(1, r - l) + 4, max(1, b - t) + 4), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    d.text((-l + 2, -t + 2), "{", font=f, fill=tuple(color[:3]) + (255,))
+    d.text((-l + 2, -t + 2), char, font=f, fill=tuple(color[:3]) + (255,))
     return img
 
 
@@ -240,8 +240,8 @@ def _render_environment(env, body, font_path, font_size, dpi, color):
                 continue
             try:
                 cells.append(render_formula(c, font_path, font_size, dpi, color))
-            except Exception:
-                cells.append(None)
+            except Exception as exc:
+                raise ValueError(f'{env} 第 {len(grid)+1} 行、第 {len(cells)+1} 列公式无法渲染：{c}') from exc
         grid.append(cells)
     if not grid:
         raise ValueError("空环境")
@@ -265,10 +265,16 @@ def _render_environment(env, body, font_path, font_size, dpi, color):
     # 先把左大括号画出来, 再按它的真实宽度预留左边距, 避免与首列重叠
     brace = None
     brace_w = 0
-    if env in _BRACED_ENVS:
-        brace = _make_brace(font_path, total_h, color)
+    delimiters = {'cases': ('{', ''), 'pmatrix': ('(', ')'), 'bmatrix': ('[', ']'),
+                  'Bmatrix': ('{', '}'), 'vmatrix': ('|', '|')}
+    left_char, right_char = delimiters.get(env, ('', ''))
+    right_brace = _make_brace(font_path, total_h, color, right_char) if right_char else None
+    if left_char:
+        brace = _make_brace(font_path, total_h, color, left_char)
         brace_w = brace.width + int(font_size * 0.18)
     total_w = brace_w + sum(col_w) + gap * max(0, ncol - 1) + pad
+    if right_brace:
+        total_w += right_brace.width + pad
 
     canvas = Image.new("RGBA", (max(1, total_w), max(1, total_h)), (0, 0, 0, 0))
     y, top_above = 0, font_size
@@ -286,6 +292,8 @@ def _render_environment(env, body, font_path, font_size, dpi, color):
 
     if brace is not None:
         canvas.paste(brace, (0, (total_h - brace.height) // 2), brace)
+    if right_brace is not None:
+        canvas.paste(right_brace, (total_w - right_brace.width, (total_h - right_brace.height) // 2), right_brace)
 
     depth = max(0, min(total_h, total_h - top_above))
     return Formula(canvas, depth, env)

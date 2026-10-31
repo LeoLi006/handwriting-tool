@@ -5,7 +5,8 @@ import warnings
 import zipfile
 
 import handwriting as hw
-from word_reader import NS, read_docx
+from word_reader import NS, read_docx, _math
+from xml.etree import ElementTree as ET
 
 
 class WordReaderTests(unittest.TestCase):
@@ -69,6 +70,40 @@ class WordReaderTests(unittest.TestCase):
                 read_docx(path)
             with self.assertRaisesRegex(ValueError, '另存为'):
                 hw.convert_file(path.with_suffix('.doc'))
+
+    def test_sum_integral_matrix_and_cases_render(self):
+        fragments = [
+            '<m:nary><m:naryPr><m:chr m:val="∑"/></m:naryPr><m:sub><m:r><m:t>i=1</m:t></m:r></m:sub><m:sup><m:r><m:t>n</m:t></m:r></m:sup><m:e><m:r><m:t>i</m:t></m:r></m:e></m:nary>',
+            '<m:nary><m:naryPr><m:chr m:val="∫"/></m:naryPr><m:sub><m:r><m:t>0</m:t></m:r></m:sub><m:sup><m:r><m:t>1</m:t></m:r></m:sup><m:e><m:r><m:t>x dx</m:t></m:r></m:e></m:nary>',
+            '<m:d><m:dPr><m:begChr m:val="["/><m:endChr m:val="]"/></m:dPr><m:e><m:m><m:mr><m:e><m:r><m:t>1</m:t></m:r></m:e><m:e><m:r><m:t>2</m:t></m:r></m:e></m:mr><m:mr><m:e><m:r><m:t>3</m:t></m:r></m:e><m:e><m:r><m:t>4</m:t></m:r></m:e></m:mr></m:m></m:e></m:d>',
+            '<m:d><m:dPr><m:begChr m:val="{"/><m:endChr m:val=""/></m:dPr><m:e><m:eqArr><m:e><m:r><m:t>x, x&gt;0</m:t></m:r></m:e><m:e><m:r><m:t>0, x≤0</m:t></m:r></m:e></m:eqArr></m:e></m:d>',
+        ]
+        expected = [r'\sum', r'\int', r'\begin{bmatrix}', r'\begin{cases}']
+        for fragment, token in zip(fragments, expected):
+            node = ET.fromstring(f'<m:oMath xmlns:m="{NS["m"]}">{fragment}</m:oMath>')
+            latex = _math(node)
+            self.assertIn(token, latex)
+            image = hw.fml.render_formula(latex)
+            self.assertGreater(image.width, 0)
+
+    def test_unsupported_equation_reports_exact_location(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.document(directory, '<w:p><m:oMath><m:phant><m:e><m:r><m:t>x</m:t></m:r></m:e></m:phant></m:oMath></w:p>')
+            with warnings.catch_warnings(record=True) as notices:
+                warnings.simplefilter('always')
+                read_docx(path)
+            text = '\n'.join(str(n.message) for n in notices)
+            self.assertIn('第 1 段', text)
+            self.assertIn('公式 1', text)
+            self.assertIn('phant', text)
+
+    def test_matrix_cell_failure_reports_location_instead_of_disappearing(self):
+        with warnings.catch_warnings(record=True) as notices:
+            warnings.simplefilter('always')
+            hw.render_markdown('<!--mojian:正文/第 3 段-->\n\n$$\\begin{matrix}1 & \\unknowncommand{x}\\end{matrix}$$')
+        message = '\n'.join(str(n.message) for n in notices)
+        self.assertIn('第 3 段', message)
+        self.assertIn('第 1 行、第 2 列', message)
 
 
 if __name__ == '__main__':

@@ -18,6 +18,8 @@ Markdown(.md) -> 手写体图片 转换引擎（混合排版）
 import argparse
 import copy
 import math
+import itertools
+import warnings
 import os
 import random
 import re
@@ -136,7 +138,8 @@ def resolve_font(name_or_path: str) -> str:
         registry = load_registry()
         key = name_or_path.strip()
         if key in registry:
-            path = os.path.join(FONT_DIR, registry[key])
+            from font_manager import font_path
+            path = os.fspath(font_path(key))
         elif os.path.exists(os.path.join(FONT_DIR, key)):
             path = os.path.join(FONT_DIR, key)
         else:
@@ -144,12 +147,14 @@ def resolve_font(name_or_path: str) -> str:
             sys.exit(f"未找到字体 '{name_or_path}'。可选: {avail}")
 
     if not os.path.exists(path):
-        sys.exit(f"字体文件不存在: {path}")
+        raise ValueError(f"字体尚未安装，请在字体管理器下载：{name_or_path}")
 
     if _NEED <= _coverage(path):
         return path
 
-    cache = os.path.join(FONT_DIR, "_merged_" +
+    from font_manager import cache_directory
+    cache_directory().mkdir(parents=True, exist_ok=True)
+    cache = os.path.join(cache_directory(), "_merged_" +
                          os.path.splitext(os.path.basename(path))[0] + ".ttf")
     if os.path.exists(cache) and _coverage(cache) >= _NEED:
         return cache
@@ -167,7 +172,8 @@ def list_fonts():
     registry = load_registry()
     print("可用风格字体 (--font 传风格名):")
     for style, fn in registry.items():
-        ok = "√" if _NEED <= _coverage(os.path.join(FONT_DIR, fn)) else "需要合并"
+        from font_manager import font_path, installed
+        ok = ('√' if _NEED <= _coverage(font_path(style)) else '需要合并') if installed(style) else '待下载（字体管理器）'
         print(f"  {style:16s} {fn:34s} {ok}")
 
 
@@ -241,6 +247,8 @@ def markdown_to_blocks(md: str):
 
     for raw in md.splitlines():
         st = raw.strip()
+        if st.startswith('<!--mojian:') and st.endswith('-->'):
+            flush(); blocks.append(('location', st[11:-3])); continue
         if not st:
             flush(); continue
         if re.fullmatch(r"[-*_]{3,}", st):
@@ -285,11 +293,20 @@ def make_background(size, line_spacing, top_margin, bottom_margin,
     return img
 
 
+class _PageLimitReached(Exception):
+    pass
+
+
+class ConversionCancelled(Exception):
+    """Cooperative cancellation; never publish an incomplete generation."""
+
+
 class Renderer:
     """混合排版器: 正文逐字手写 + 公式二维贴图, 自动换行/分页。"""
 
     def __init__(self, font_size, dpi, ruled, line_spacing_ratio, word_spacing,
-                 body_font, formula_font, seed, jitter=1.0, glyph_variation=1.0):
+                 body_font, formula_font, seed, jitter=1.0, glyph_variation=1.0,
+                 page_limit=0, cancel=None, page_progress=None, page_sink=None):
         self.size = font_size
         self.dpi = dpi
         self.ruled = ruled
@@ -300,6 +317,13 @@ class Renderer:
         self.jitter = max(0.0, float(jitter))   # 位置、旋转和字号随机度
         self.glyph_variation = max(0.0, float(glyph_variation))
         self.shape_rand = random.Random(f"glyph:{seed}")
+        self.page_limit = page_limit
+        self.cancel = cancel
+        self.page_progress = page_progress
+        self.location = '正文'
+        self.page_sink = page_sink
+        self.page_count = 0
+        self._flushed_page = 0
         self._writing_slant = 0.0
         self._writing_scale = 0.0
 
@@ -368,6 +392,7 @@ class Renderer:
         """绘制字形，叠加内部局部形变与缓慢变化的书写节奏。
         (x, y) 为该字基线左端坐标。
         """
+        self.check_cancel()
         j = self.jitter
         if j > 0:
             self._writing_slant = 0.88 * self._writing_slant + self.rand.uniform(-0.35, 0.35)
@@ -394,46 +419,71 @@ class Renderer:
         self.page.paste(tile, (int(x - pad), int(y - (pad + asc))), tile)
 
     def _new_page(self):
+        self.check_cancel()
+        self.finish_page()
+        if self.page_count and self.page_progress:
+            self.page_progress(self.page_count)
+        if self.page_limit and self.page_count >= self.page_limit:
+            raise _PageLimitReached()
+        if self.page_sink:
+            self.pages.clear()
         bg = make_background((self.w, self.h), self.line_spacing, self.top,
                              self.bottom, self.left, self.right, self.ruled)
         self.page = bg
         self.draw = ImageDraw.Draw(bg)
         self.y = self.top                       # 当前行"顶"的 y
         self.pages.append(bg)
+        self.page_count += 1
+
+    def finish_page(self):
+        if self.page_sink and self.page_count > self._flushed_page:
+            self.check_cancel()
+            self.page_sink(self.page, self.page_count)
+            self._flushed_page = self.page_count
 
     def _ensure(self, need):
         if self.y + need > self.h - self.bottom:
             self._new_page()
 
+    def check_cancel(self):
+        if self.cancel is not None and self.cancel():
+            raise ConversionCancelled('已取消转换')
+
     # -- 行内解析 -----------------------------------------------------------
+    def _render_formula(self, latex):
+        self.check_cancel()
+        with warnings.catch_warnings(record=True) as notices:
+            warnings.simplefilter('always', UserWarning)
+            result = fml.render_formula(latex, self.ffont, self.size, self.dpi, COLOR)
+        for notice in notices:
+            warnings.warn(f'{self.location}，公式「{latex[:100]}」：{notice.message}', UserWarning)
+        return result
+
     def _inline_items(self, text):
-        items, pos = [], 0
+        pos = 0
         for m in _INLINE_MATH.finditer(text):
             if m.start() > pos:
-                items.append(("text", text[pos:m.start()]))
+                yield "text", text[pos:m.start()]
             latex = m.group(1).strip()
             try:
-                items.append(("math",
-                              fml.render_formula(latex, self.ffont, self.size,
-                                                 self.dpi, COLOR)))
-            except Exception:
-                items.append(("text", latex))
+                yield "math", self._render_formula(latex)
+            except Exception as exc:
+                warnings.warn(f'{self.location}，行内公式「{latex[:100]}」二维渲染失败，已保留文字：{exc}', UserWarning)
+                yield "text", latex
             pos = m.end()
         if pos < len(text):
-            items.append(("text", text[pos:]))
-        return items
+            yield "text", text[pos:]
 
     def _tokens(self, s, size):
-        toks, i = [], 0
+        i = 0
         for m in _WORD.finditer(s):
             if m.start() > i:
                 for ch in s[i:m.start()]:
-                    toks.append((ch, self._adv(ch, size)))
-            toks.append((m.group(0), self._adv(m.group(0), size)))
+                    yield ch, self._adv(ch, size)
+            yield m.group(0), self._adv(m.group(0), size)
             i = m.end()
         for ch in s[i:]:
-            toks.append((ch, self._adv(ch, size)))
-        return toks
+            yield ch, self._adv(ch, size)
 
     # -- 绘制 ---------------------------------------------------------------
     def _draw_flow(self, items, size, indent=0):
@@ -444,6 +494,7 @@ class Renderer:
         x = self.left + indent
         limit = self.w - self.right
         for kind, val in items:
+            self.check_cancel()
             if kind == "text":
                 for tok, tw in self._tokens(val, size):
                     if tok == " ":
@@ -457,6 +508,10 @@ class Renderer:
                     cx = x
                     j = self.jitter
                     for ch in tok:
+                        if cx + self._adv(ch, size) > limit and cx > self.left + indent:
+                            self.y += self.line_spacing
+                            self._ensure(ascent + self._metrics(size)[1])
+                            cx = self.left + indent
                         self._draw_char(
                             ch,
                             cx + self._gauss(size * 0.03 * j),
@@ -478,8 +533,9 @@ class Renderer:
 
     def _draw_display_formula(self, latex):
         try:
-            fi = fml.render_formula(latex, self.ffont, self.size, self.dpi, COLOR)
-        except Exception:
+            fi = self._render_formula(latex)
+        except Exception as exc:
+            warnings.warn(f'{self.location}，独立公式「{latex[:100]}」二维渲染失败，已保留文字：{exc}', UserWarning)
             self._draw_flow([("text", latex)], self.size)
             return
         maxw = self.w - self.left - self.right
@@ -510,8 +566,11 @@ class Renderer:
 
     # -- 入口 ---------------------------------------------------------------
     def draw_block(self, block, formula=True):
+        self.check_cancel()
         kind = block[0]
-        if kind == "formula":
+        if kind == 'location':
+            self.location = block[1]
+        elif kind == "formula":
             if formula:
                 self._draw_display_formula(block[1])
             else:
@@ -523,7 +582,7 @@ class Renderer:
             size = int(self.size * 1.12)
             self._draw_flow(self._inline_items(txt), size)
         elif kind == "bullet":
-            self._draw_flow([("text", "· ")] + self._inline_items(block[1]),
+            self._draw_flow(itertools.chain([("text", "· ")], self._inline_items(block[1])),
                             self.size, indent=int(self.size * 0.7))
         elif kind == "rule":
             self._draw_rule()
@@ -533,60 +592,78 @@ class Renderer:
 
 def render_markdown(md, *, font=None, font_size=40, dpi=150, seed=20231029,
                     ruled=True, line_spacing_ratio=1.4, word_spacing=0.0,
-                    formula=True, formula_font=None, jitter=1.0, glyph_variation=1.0):
+                    formula=True, formula_font=None, jitter=1.0, glyph_variation=1.0,
+                    page_limit=0, cancel=None, page_progress=None, page_sink=None):
     """把 markdown 文本渲染成若干页 PIL.Image, 返回 (pages, renderer)。"""
     body = pick_font(font)
     ffont = formula_font or FALLBACK
     if not os.path.exists(ffont):
         ffont = body
     r = Renderer(font_size, dpi, ruled, line_spacing_ratio, word_spacing,
-                 body, ffont, seed, jitter=jitter, glyph_variation=glyph_variation)
-    for blk in markdown_to_blocks(md):
-        r.draw_block(blk, formula=formula)
+                 body, ffont, seed, jitter=jitter, glyph_variation=glyph_variation,
+                 page_limit=page_limit, cancel=cancel, page_progress=page_progress,
+                 page_sink=page_sink)
+    try:
+        for blk in markdown_to_blocks(md):
+            r.draw_block(blk, formula=formula)
+    except _PageLimitReached:
+        pass
+    r.check_cancel()
+    r.finish_page()
     return r.pages, r
 
 
 def convert_text(text, outdir, stem, *, font=None, font_size=40, dpi=150,
                  seed=20231029, ruled=True, line_spacing_ratio=1.4,
                  word_spacing=0.0, formula=True, formula_font=None,
-                 jitter=1.0, glyph_variation=1.0, page=0, max_pages=0, progress=None):
+                 jitter=1.0, glyph_variation=1.0, page=0, max_pages=0, progress=None,
+                 cancel=None, page_progress=None):
     """把 (markdown) 文本渲染成手写体 PNG, 返回输出文件路径列表。"""
     os.makedirs(outdir, exist_ok=True)
-    pages, r = render_markdown(
+    out_paths = []
+    def save_page(image, index):
+        if page and index != page:
+            return
+        path = os.path.join(outdir, f'{stem}_p{index}.png')
+        image.save(path)
+        out_paths.append(path)
+        if progress:
+            progress(len(out_paths), 0)
+
+    render_markdown(
         text, font=font, font_size=font_size, dpi=dpi, seed=seed, ruled=ruled,
         line_spacing_ratio=line_spacing_ratio, word_spacing=word_spacing,
         formula=formula, formula_font=formula_font, jitter=jitter,
-        glyph_variation=glyph_variation)
-    out_paths = []
-    for i, pg in enumerate(pages, 1):
-        if page and i != page:
-            continue
-        if max_pages and len(out_paths) >= max_pages:
-            break
-        path = os.path.join(outdir, f"{stem}_p{i}.png")
-        pg.save(path)
-        out_paths.append(path)
-        if progress:
-            progress(len(out_paths), len(pages))
+        glyph_variation=glyph_variation, page_limit=page or max_pages,
+        cancel=cancel, page_progress=page_progress, page_sink=save_page)
     return out_paths
 
 
-def convert_file(input_path, outdir=None, *, font=None, font_size=40, dpi=150,
-                 seed=20231029, ruled=True, line_spacing_ratio=1.4,
-                 word_spacing=0.0, formula=True, formula_font=None,
-                 jitter=1.0, glyph_variation=1.0, page=0, max_pages=0, progress=None):
-    """把 DOCX 或 UTF-8 文本转成手写体 PNG，返回输出路径列表。"""
+def read_input(input_path, cancel=None):
+    """Read document text without laying out any pages."""
+    if cancel and cancel():
+        raise ConversionCancelled('已取消文档读取')
     extension = os.path.splitext(os.fspath(input_path))[1].lower()
     if extension == '.doc':
         raise ValueError('暂不支持旧版 .doc，请用 Word 或 WPS 另存为 .docx 后转换。')
     if extension == '.docx':
         from word_reader import read_docx
-        md = read_docx(input_path)
+        md = read_docx(input_path, include_locations=True, cancel=cancel)
     else:
-        with open(input_path, encoding="utf-8") as f:
-            md = f.read()
+        with open(input_path, encoding='utf-8') as source:
+            md = source.read()
     if not md.strip():
-        raise ValueError("文件为空")
+        raise ValueError('文件为空')
+    return md
+
+
+def convert_file(input_path, outdir=None, *, font=None, font_size=40, dpi=150,
+                 seed=20231029, ruled=True, line_spacing_ratio=1.4,
+                 word_spacing=0.0, formula=True, formula_font=None,
+                 jitter=1.0, glyph_variation=1.0, page=0, max_pages=0, progress=None,
+                 cancel=None, page_progress=None):
+    """把 DOCX 或 UTF-8 文本转成手写体 PNG，返回输出路径列表。"""
+    md = read_input(input_path, cancel=cancel)
     stem = os.path.splitext(os.path.basename(input_path))[0]
     if outdir is None:
         outdir = os.path.join(os.path.dirname(os.path.abspath(input_path)), "手写体")
@@ -596,7 +673,8 @@ def convert_file(input_path, outdir=None, *, font=None, font_size=40, dpi=150,
                         word_spacing=word_spacing, formula=formula,
                         formula_font=formula_font, jitter=jitter,
                         glyph_variation=glyph_variation, page=page,
-                        max_pages=max_pages, progress=progress)
+                        max_pages=max_pages, progress=progress, cancel=cancel,
+                        page_progress=page_progress)
 
 
 def main():
@@ -620,6 +698,7 @@ def main():
                     help="独立的字形变化强度(0=关闭, 默认 1, 1.8 起达到上限)")
     ap.add_argument("--max-pages", type=int, default=0, help="最多输出几页(0=全部)")
     ap.add_argument("--page", type=int, default=0, help="只输出第几页(0=全部)")
+    ap.add_argument('--pdf', action='store_true', help='同时导出整份 PDF（PNG 保留供预览）')
     args = ap.parse_args()
 
     if args.list_fonts:
@@ -630,13 +709,14 @@ def main():
 
     outdir = args.outdir or os.path.join(
         os.path.dirname(os.path.abspath(args.input)), "手写体")
-    paths = convert_file(
+    from managed_output import generate_document
+    paths = generate_document(
         args.input, outdir, font=args.font, font_size=args.font_size,
         dpi=args.dpi, seed=args.seed, ruled=not args.no_ruled,
         formula=not args.no_formula,
         line_spacing_ratio=args.line_spacing, word_spacing=args.word_spacing,
         jitter=args.jitter, glyph_variation=args.glyph_variation,
-        page=args.page, max_pages=args.max_pages)
+        page=args.page, max_pages=args.max_pages, export_format='both' if args.pdf else 'png')
     print(f"完成: 共 {len(paths)} 页, 输出到 {outdir}")
 
 

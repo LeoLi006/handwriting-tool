@@ -33,24 +33,72 @@ def _math(node):
     if kind == 'rad':
         degree = part('deg')
         return r'\sqrt' + ('[' + degree + ']' if degree else '') + '{' + part('e') + '}'
+    if kind == 'nary':
+        prop = node.find('m:naryPr/m:chr', NS)
+        symbol = prop.get('{' + NS['m'] + '}val', '∫') if prop is not None else '∫'
+        operator = {'∑': r'\sum', '∏': r'\prod', '∫': r'\int', '∬': r'\iint',
+                    '∭': r'\iiint', '∮': r'\oint', '⋃': r'\bigcup', '⋂': r'\bigcap'}.get(symbol)
+        if operator is None:
+            warnings.warn(f'不支持的求和/积分运算符 {symbol!r}，已保留文字。', UserWarning)
+            operator = symbol
+        for name, mark in [('sub', '_'), ('sup', '^')]:
+            hidden = node.find('m:naryPr/m:' + name + 'Hide', NS)
+            is_hidden = hidden is not None and hidden.get('{' + NS['m'] + '}val', '1') not in {'0', 'false', 'off'}
+            if not is_hidden and part(name):
+                operator += mark + '{' + part(name) + '}'
+        return operator + ' {' + part('e') + '}'
+    if kind == 'm':
+        rows = [' & '.join(_math(e) for e in row.findall('m:e', NS))
+                for row in node.findall('m:mr', NS)]
+        return r'\begin{matrix}' + r' \\ '.join(rows) + r'\end{matrix}'
+    if kind == 'eqArr':
+        return r'\begin{aligned}' + r' \\ '.join(_math(e) for e in node.findall('m:e', NS)) + r'\end{aligned}'
+    if kind == 'acc':
+        prop = node.find('m:accPr/m:chr', NS)
+        symbol = prop.get('{' + NS['m'] + '}val', '̂') if prop is not None else '̂'
+        command = {'̂': 'hat', '^': 'hat', '̅': 'bar', '¯': 'bar', '⃗': 'vec',
+                   '→': 'vec', '̃': 'tilde', '~': 'tilde', '̇': 'dot', '̈': 'ddot'}.get(symbol)
+        if command:
+            return '\\' + command + '{' + part('e') + '}'
+    if kind == 'func':
+        return r'\operatorname{' + part('fName') + '} {' + part('e') + '}'
     if kind == 'd':
         def delimiter(name, default):
             prop = node.find('m:dPr/m:' + name, NS)
             return prop.get('{' + NS['m'] + '}val', default) if prop is not None else default
         content = delimiter('sepChr', '|').join(_math(c) for c in node.findall('m:e', NS))
-        return delimiter('begChr', '(') + content + delimiter('endChr', ')')
-    if kind in {'nary', 'm', 'eqArr', 'acc', 'limLow', 'limUpp', 'groupChr', 'bar', 'func'}:
-        warnings.warn('部分 Word 公式结构暂不支持，已提取其中的文字；请检查公式。', UserWarning)
+        left, right = delimiter('begChr', '('), delimiter('endChr', ')')
+        environment = {('(', ')'): 'pmatrix', ('[', ']'): 'bmatrix', ('{', '}'): 'Bmatrix',
+                       ('|', '|'): 'vmatrix', ('{', ''): 'cases'}.get((left, right))
+        if environment and re.fullmatch(r'\\begin\{(matrix|aligned)\}.*\\end\{\1\}', content, re.S):
+            content = re.sub(r'^\\begin\{[^}]+\}', '', content)
+            content = re.sub(r'\\end\{[^}]+\}$', '', content)
+            return '\\begin{' + environment + '}' + content + '\\end{' + environment + '}'
+        return left + content + right
+    if kind not in {'oMath', 'oMathPara', 'e', 'r', 'num', 'den', 'sub', 'sup', 'deg', 'mr', 'fName'}:
+        warnings.warn(f'Word 公式结构 {kind} 暂不支持准确转换，已保留其中的文字。', UserWarning)
     return ''.join(_math(child) for child in node)
 
 
-def _inline(node):
+def _inline(node, context=None):
+    context = context if context is not None else dict(location='正文', equation=0)
     kind = _tag(node)
     if node.tag == '{' + NS['m'] + '}oMath':
-        return '$' + _math(node) + '$'
+        context['equation'] += 1
+        with warnings.catch_warnings(record=True) as notices:
+            warnings.simplefilter('always', UserWarning)
+            value = _math(node)
+        excerpt = ''.join(node.itertext()).strip()[:70]
+        for notice in notices:
+            warnings.warn(f"{context['location']}，公式 {context['equation']}「{excerpt}」：{notice.message}", UserWarning)
+        return '$' + value + '$'
     if node.tag == '{' + NS['m'] + '}oMathPara':
-        return '\n$$\n' + ''.join(_math(c) for c in node if _tag(c) == 'oMath') + '\n$$\n'
-    if kind in {'pPr', 'rPr', 'del', 'drawing', 'pict', 'object'}:
+        content = [_inline(c, context)[1:-1] for c in node if _tag(c) == 'oMath']
+        return '\n$$\n' + ' '.join(content) + '\n$$\n'
+    if kind in {'drawing', 'pict', 'object'}:
+        warnings.warn(f"{context['location']}：图片、嵌入对象或图片公式未转写。", UserWarning)
+        return ''
+    if kind in {'pPr', 'rPr', 'del'}:
         return ''
     if kind == 't':
         return node.text or ''
@@ -58,10 +106,10 @@ def _inline(node):
         return '    '
     if kind in {'br', 'cr'}:
         return '\n'
-    return ''.join(_inline(child) for child in node)
+    return ''.join(_inline(child, context) for child in node)
 
 
-def read_docx(path):
+def read_docx(path, include_locations=False, cancel=None):
     """Return simplified Markdown, preserving paragraph/table reading order."""
     try:
         with zipfile.ZipFile(path) as archive:
@@ -96,8 +144,8 @@ def read_docx(path):
             key = base.get('{' + NS['w'] + '}val') if base is not None else None
         return props, style
 
-    def paragraph(node):
-        text = _inline(node).strip()
+    def paragraph(node, location):
+        text = _inline(node, dict(location=location, equation=0)).strip()
         if not text:
             return ''
         props, style = properties(node)
@@ -117,23 +165,30 @@ def read_docx(path):
             return '- ' + text
         return text
 
-    def blocks(parent):
+    def blocks(parent, location='正文', annotate=True):
         result = []
-        for child in parent:
+        for index, child in enumerate(parent, 1):
+            if cancel and cancel():
+                from handwriting import ConversionCancelled
+                raise ConversionCancelled('已取消 Word 读取')
             kind = _tag(child)
+            here = f'{location}/第 {index} 段'
+            marker = f'<!--mojian:{here}-->\n' if include_locations and annotate else ''
             if kind == 'p':
-                result.append(paragraph(child))
+                value = paragraph(child, here)
+                if value:
+                    result.append(marker + value)
             elif kind == 'tbl':
-                for row in child.findall('w:tr', NS):
-                    cells = [' / '.join(blocks(cell)) for cell in row.findall('w:tc', NS)]
-                    result.append(' ｜ '.join(cells))
+                for ri, row in enumerate(child.findall('w:tr', NS), 1):
+                    cells = [' / '.join(blocks(cell, f'{location}/第 {index} 块表格/行 {ri} 列 {ci}', False))
+                             for ci, cell in enumerate(row.findall('w:tc', NS), 1)]
+                    marker = f'<!--mojian:{location}/第 {index} 块表格/行 {ri}-->\n' if include_locations and annotate else ''
+                    result.append(marker + ' ｜ '.join(cells))
             elif kind in {'sdt', 'sdtContent', 'ins'}:
-                result.extend(blocks(child))
+                result.extend(blocks(child, here, annotate))
         return [text for text in result if text.strip()]
 
     body = root.find('w:body', NS)
     if body is None:
         raise ValueError('Word 文档中没有正文。')
-    if any(_tag(node) in {'drawing', 'pict', 'object'} for node in body.iter()):
-        warnings.warn('Word 中的图片、嵌入对象或图片公式未转写，仅提取文本与支持的原生公式。', UserWarning)
     return '\n\n'.join(blocks(body))
