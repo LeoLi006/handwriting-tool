@@ -89,6 +89,8 @@ python handwriting.py "examples/示例.md" --max-pages 1
 
 ## 开发与验证
 
+字符图保留显式线型：`─ │` 为实线，`┄ ┈ ╌ ┆ ┊ ╎` 为虚线，交叉处分别保留各方向线型。全部使用实线字符的输入会保持实线；“虚部门限”表示虚部的门限，不是虚线标记。参见 [实线与虚线示例](examples/实线与虚线.md)。
+
 ```bash
 python -m unittest discover -s tests -v
 ```

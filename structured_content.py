@@ -1,5 +1,6 @@
 """Markdown grid parsing and faithful, display-column based text diagrams."""
 import re
+import math
 import unicodedata
 import warnings
 
@@ -61,8 +62,39 @@ def diagram_image(text, font_path, size, max_width, language='text', max_height=
     font = ImageFont.truetype(font_path, size)
     ink = (28, 30, 66, 255)
     stroke = max(2, round(size / 20))
-    line_glyphs = set('─━│┃┼┬┴├┤┌┐└┘┏┓┗┛┯┷┿╋┆┊┄┈↑↓←→↔↕')
+    line_glyphs = set('─━│┃┼┬┴├┤┌┐└┘┏┓┗┛┯┷┿╋┆┊┄┈┅┉┇┋╌╍╎╏↑↓←→↔↕')
     schematic = language.lower() in {'diagram', 'ascii', 'polezero', 'constellation'} or sum(c in line_glyphs for c in text) >= 3
+    # Use one phase for each canvas direction, including junction arms.
+    # Resetting the phase for every glyph can accidentally fill all dash gaps.
+    horizontal_glyphs = '─━┄┈┅┉╌╍'
+    vertical_glyphs = '│┃┆┊┇┋╎╏'
+    dashed_glyphs = '┄┈┅┉╌╍┆┊┇┋╎╏'
+    grid = {}
+    for row_index, source_line in enumerate(lines):
+        col = 0
+        for glyph in source_line:
+            grid[row_index, col] = glyph
+            col += display_width(glyph)
+
+    def dashed_neighbor(row_index, col, direction):
+        dr, dc = {'l': (0, -1), 'r': (0, 1), 'u': (-1, 0), 'd': (1, 0)}[direction]
+        glyph = grid.get((row_index+dr, col+dc), '')
+        return bool(glyph and glyph in dashed_glyphs)
+
+    def segment(start, end, dashed=False):
+        if not dashed:
+            draw.line((*start, *end), fill=ink, width=stroke)
+            return
+        vertical_line = start[0] == end[0]
+        a, b = sorted((start[1], end[1]) if vertical_line else (start[0], end[0]))
+        period = max(stroke*4, line_height*.8 if vertical_line else cell*1.8)
+        dash = period*.58
+        for index in range(math.floor(a/period), math.floor(b/period)+1):
+            lo, hi = max(a, index*period), min(b, index*period+dash)
+            if hi > lo:
+                points = (start[0], lo, start[0], hi) if vertical_line else (lo, start[1], hi, start[1])
+                draw.line(points, fill=ink, width=stroke)
+
     strokes = []
     origins = []
     for row, line in enumerate(lines):
@@ -80,19 +112,19 @@ def diagram_image(text, font_path, size, max_width, language='text', max_height=
             before, after = line[max(0, index - 1):index], line[index + 1:index + 2]
             if char in 'O0' and (before in '─━' and before or after in '─━' and after):
                 origins.append((x, y))
-            horizontal = char in '─━┄┈' or (char in '-_' and schematic and (before in '-_─' and before or after in '-_─' and after))
-            vertical = char in '│┃┆┊' or char == '|' and schematic
+            horizontal = char in horizontal_glyphs or (char in '-_' and schematic and (before in '-_─' and before or after in '-_─' and after))
+            vertical = char in vertical_glyphs or char == '|' and schematic
             if horizontal:
-                draw.line((x - cell / 2, y, x + cell / 2, y), fill=ink, width=stroke)
+                segment((x-cell/2, y), (x+cell/2, y), char in dashed_glyphs)
             elif vertical:
-                draw.line((x, y - line_height / 2, x, y + line_height / 2), fill=ink, width=stroke)
+                segment((x, y-line_height/2), (x, y+line_height/2), char in dashed_glyphs)
             elif schematic and char in '┼┬┴├┤┌┐└┘┏┓┗┛┯┷┿╋+':
                 directions = {'┌': 'rd', '┏': 'rd', '┐': 'ld', '┓': 'ld', '└': 'ru', '┗': 'ru',
                               '┘': 'lu', '┛': 'lu', '┬': 'lrd', '┴': 'lru', '├': 'rud', '┤': 'lud'}.get(char, 'lrud')
                 for direction, end in [('l', (x-cell/2, y)), ('r', (x+cell/2, y)),
                                        ('u', (x, y-line_height/2)), ('d', (x, y+line_height/2))]:
                     if direction in directions:
-                        draw.line((x, y, *end), fill=ink, width=stroke)
+                        segment((x, y), end, dashed_neighbor(row, column-span, direction))
             elif schematic and char in '↑↓←→↔↕':
                 if char in '↑↓↕':
                     draw.line((x, y-line_height/2, x, y+line_height/2), fill=ink, width=stroke)
