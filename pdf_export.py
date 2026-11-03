@@ -6,7 +6,8 @@ import tempfile
 from PIL import Image
 
 
-def write_pdf(pages, destination, dpi=150, cancel=None, progress=None):
+def write_pdf(pages, destination, dpi=150, cancel=None, progress=None,
+              subject=None, keywords=None):
     from handwriting import ConversionCancelled
     if not pages:
         raise ValueError('没有可导出的页面')
@@ -21,7 +22,8 @@ def write_pdf(pages, destination, dpi=150, cancel=None, progress=None):
             with Image.open(path) as source:
                 with source.convert('RGB') as image:
                     image.save(staging, format='PDF', resolution=dpi, append=index > 0,
-                               title=destination.stem, creator='Mojian / Pillow', quality=95)
+                               title=destination.stem, creator='Mojian / Pillow', quality=95,
+                               subject=subject, keywords=keywords)
             if progress:
                 progress(index + 1)
         if cancel and cancel():

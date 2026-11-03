@@ -4,7 +4,7 @@ r"""
 把 Word / Markdown / TXT 文件拖进窗口即可转成手写体 PNG 图片。
 
 运行:
-    python 手写体工具/gui.py     (或双击 启动GUI.bat)
+    python 手写体工具/gui.py     (或双击 启动GUI.vbs，无终端)
 
 依赖: handright, fonttools, pillow, tkinterdnd2, matplotlib
 """
@@ -39,6 +39,7 @@ import handwriting as hw   # noqa: E402
 from app_settings import PRESETS, load_settings, save_settings
 from batch_tasks import run_batch
 import font_manager
+from ui_scaling import ResponsiveFonts
 
 ACCENT = "#29796b"
 BG = "#f2f4f3"
@@ -105,6 +106,7 @@ class App:
 
         self._build_style()
         self._build_layout()
+        self.ui_scaling = ResponsiveFonts(root, self._scale_layout)
         self._load_preferences()
         self.root.protocol('WM_DELETE_WINDOW', self._close)
         self.root.after(80, self._poll)   # 主线程轮询队列
@@ -143,6 +145,7 @@ class App:
         body = tk.Frame(self.root, bg=BG)
         body.pack(fill="both", expand=True, padx=24, pady=(0, 20))
         panel = tk.Frame(body, bg=CARD, width=330)
+        self._side_panel = panel
         panel.pack(side="left", fill="y", padx=(0, 18))
         panel.pack_propagate(False)
         # Keep the conversion button visible even when the settings need scrolling.
@@ -226,7 +229,7 @@ class App:
         section('导出格式')
         self.export_var = tk.StringVar(value='PNG 图片')
         ttk.Combobox(left, textvariable=self.export_var, state='readonly',
-                     values=['PNG 图片', 'PNG + PDF']).pack(fill='x', pady=(0, 14))
+                     values=['PNG 图片', 'PDF 文件']).pack(fill='x', pady=(0, 14))
 
         right = tk.Frame(body, bg=BG)
         right.pack(side="left", fill="both", expand=True)
@@ -269,7 +272,7 @@ class App:
         toolbar = tk.Frame(preview_card, bg=CARD); toolbar.pack(fill="x", pady=(0, 10))
         tk.Label(toolbar, text="纸张预览", bg=CARD, fg=INK,
                  font=("Microsoft YaHei UI", 11, "bold")).pack(side="left")
-        ttk.Button(toolbar, text="打开输出目录", command=self._open_out).pack(side="right")
+        ttk.Button(toolbar, text="打开输出", command=self._open_out).pack(side="right")
         self.preview = tk.Label(preview_card, bg="#e9eeeb", fg=MUTED,
                                 text="选择文档后预览第一页\n\n满意后再确认生成全文", font=("Microsoft YaHei UI", 12))
         self.preview.pack(fill="both", expand=True)
@@ -294,6 +297,10 @@ class App:
         s.pack(fill="x")
         return s
 
+    def _scale_layout(self, scale, width, height):
+        self._side_panel.configure(width=round(330*scale))
+        self.status.configure(wraplength=max(280, width-round(330*scale)-90))
+
     def _load_fonts(self):
         reg = hw.load_registry()
         self.style_keys = list(reg.keys())
@@ -313,7 +320,7 @@ class App:
         data = load_settings(self.settings_file)
         for key, var in self._setting_variables().items():
             if key in data:
-                var.set(data[key])
+                var.set('PDF 文件' if key == 'export_format' and data[key] == 'PNG + PDF' else data[key])
         for key, combo in [('font', self.font_combo), ('formula_font', self.fmfont_combo)]:
             if data.get(key) in self.style_keys:
                 combo.current(self.style_keys.index(data[key]))
@@ -436,7 +443,11 @@ class App:
         selection = self.job_tree.selection()
         selected = next((j for j in completed if selection and j['id'] == selection[0]), None)
         if selected or completed:
-            directory = os.path.dirname((selected or completed[0])['paths'][0])
+            path = (selected or completed[0])['paths'][0]
+            if path.lower().endswith('.pdf') and os.path.isfile(path):
+                os.startfile(path)
+                return
+            directory = os.path.dirname(path)
             if os.path.isdir(directory):
                 os.startfile(directory)
                 return
@@ -507,7 +518,8 @@ class App:
                 return
             self.font_window.destroy()
         window = tk.Toplevel(self.root); window.title('字体管理 · 按需下载')
-        window.geometry('720x460'); window.configure(bg=CARD)
+        zoom = self.ui_scaling.scale
+        window.geometry(f'{round(720*zoom)}x{round(460*zoom)}'); window.configure(bg=CARD)
         self.font_window = window
         catalog = font_manager.catalog(); keys = list(catalog)
         choices = tk.Listbox(window, width=30, exportselection=False, bd=0,
@@ -518,7 +530,7 @@ class App:
         info = tk.Frame(window, bg=CARD, padx=16); info.pack(side='left', fill='both', expand=True)
         name = ttk.Label(info, font=('Microsoft YaHei UI', 12, 'bold')); name.pack(anchor='w', pady=(24, 10))
         sample = tk.Label(info, bg=CARD); sample.pack(fill='x', pady=10)
-        self.font_info = ttk.Label(info, wraplength=380, justify='left'); self.font_info.pack(anchor='w', pady=10)
+        self.font_info = ttk.Label(info, wraplength=round(380*zoom), justify='left'); self.font_info.pack(anchor='w', pady=10)
         current = [selected or keys[0]]
         def select(event=None):
             index = choices.curselection()
@@ -527,7 +539,7 @@ class App:
             key = current[0] = keys[index[0]]; item = catalog[key]
             name.configure(text=item['label'])
             with Image.open(os.path.join(hw.FONT_DIR, item['sample'])) as image:
-                preview = image.copy(); preview.thumbnail((380, 85))
+                preview = image.copy(); preview.thumbnail((round(380*zoom), round(85*zoom)))
             sample.image = ImageTk.PhotoImage(preview); sample.configure(image=sample.image)
             state = '已安装，可离线使用' if font_manager.installed(key) else '尚未安装'
             self.font_info.configure(text=f"{state}\n字体大小：{item['size']/1024/1024:.1f} MB\n授权：SIL Open Font License 1.1\n来源：{item['source']}")
@@ -537,6 +549,7 @@ class App:
         ttk.Button(info, text='下载并安装所选字体', style='Primary.TButton',
                    command=lambda: self._download_font(current[0])).pack(fill='x', pady=8)
         choices.selection_set(keys.index(current[0])); select()
+        self.ui_scaling.register(window)
 
     def _download_font(self, key):
         if self.busy:
@@ -587,7 +600,8 @@ class App:
         self.prog.configure(value=0, maximum=len(self.files))
         self.status.configure(text="正在转换…")
         params = dict(self._parameters(), outdir=self.out_var.get().strip() or None,
-                      export_format='both' if self.export_var.get() == 'PNG + PDF' else 'png')
+                      export_format='pdf' if self.export_var.get() in {'PDF 文件', 'PNG + PDF'} else 'png',
+                      preview_root=os.path.join(self._preview_dir.name, 'completed'))
         jobs = [job.copy() for job in self.jobs if not retry or job['status'] == '失败']
         self.prog.configure(maximum=max(1, len(jobs)))
         self._batch_completed = 0
@@ -609,7 +623,7 @@ class App:
             return
         job = next(j for j in self.jobs if j['id'] == selection[0])
         if job.get('paths') and not self.busy:
-            self.output_paths = job['paths']; self.preview_index = 0
+            self.output_paths = job.get('preview_paths', job['paths']); self.preview_index = 0
             self._show_preview(self.output_paths[0]); self._update_navigation()
         details = '\n'.join([job.get('error', ''), *job.get('notices', [])]).strip()
         if details:
@@ -618,6 +632,7 @@ class App:
             bar = ttk.Scrollbar(window, command=text.yview); bar.pack(side='right', fill='y')
             text.configure(yscrollcommand=bar.set); text.pack(fill='both', expand=True)
             text.insert('1.0', details); text.configure(state='disabled')
+            self.ui_scaling.register(window)
 
     def _poll(self):
         """主线程: 定期取出后台消息并刷新界面。"""
@@ -670,7 +685,7 @@ class App:
                     self.job_tree.set(msg[1][0], 'status', f'排版中 · {msg[1][1]} 页')
                 elif kind == 'batch_done':
                     self.notices = [n for j in msg[1] for n in j.get('notices', [])]
-                    paths = [p for j in msg[1] for p in j.get('paths', [])]
+                    paths = [p for j in msg[1] for p in j.get('preview_paths', j.get('paths', []))]
                     self._done(paths, all(j['status'] == '完成' for j in msg[1]))
                     counts = {s: sum(j['status'] == s for j in msg[1]) for s in ('完成', '失败', '已取消')}
                     self.status.configure(text=' · '.join(f'{s} {n} 份' for s, n in counts.items()) + '；双击文件查看问题清单。')

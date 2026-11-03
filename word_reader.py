@@ -179,11 +179,21 @@ def read_docx(path, include_locations=False, cancel=None):
                 if value:
                     result.append(marker + value)
             elif kind == 'tbl':
+                table_rows = []
                 for ri, row in enumerate(child.findall('w:tr', NS), 1):
                     cells = [' / '.join(blocks(cell, f'{location}/第 {index} 块表格/行 {ri} 列 {ci}', False))
                              for ci, cell in enumerate(row.findall('w:tc', NS), 1)]
-                    marker = f'<!--mojian:{location}/第 {index} 块表格/行 {ri}-->\n' if include_locations and annotate else ''
-                    result.append(marker + ' ｜ '.join(cells))
+                    table_rows.append(cells)
+                if include_locations and annotate and table_rows:
+                    count = max(len(row) for row in table_rows)
+                    rows = [(row + ['']*count)[:count] for row in table_rows]
+                    def markdown_row(cells):
+                        return '| ' + ' | '.join(cell.replace('|', r'\|').replace('\n', '<br>') for cell in cells) + ' |'
+                    content = [markdown_row(rows[0]), markdown_row(['---']*count)]
+                    content.extend(markdown_row(row) for row in rows[1:])
+                    result.append(f'<!--mojian:{location}/第 {index} 块表格-->\n' + '\n'.join(content))
+                else:
+                    result.extend(' ｜ '.join(cells) for cells in table_rows)
             elif kind in {'sdt', 'sdtContent', 'ins'}:
                 result.extend(blocks(child, here, annotate))
         return [text for text in result if text.strip()]

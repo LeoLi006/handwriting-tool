@@ -74,6 +74,10 @@ class WorkflowTests(unittest.TestCase):
                 generate_document(source, outdir=output, cancel=lambda: True)
             self.assertEqual(before, latest.read_bytes())
             self.assertTrue(Path(new[0]).exists())
+            with self.assertRaisesRegex(ValueError, '页码'):
+                generate_document(source, outdir=output, page=999, jitter=0, glyph_variation=0)
+            self.assertEqual(before, latest.read_bytes())
+            self.assertTrue(Path(new[0]).exists())
             other = Path(directory) / 'other' / source.name
             self.assertNotEqual(document_directory(source, output), document_directory(other, output))
 
@@ -102,6 +106,36 @@ class WorkflowTests(unittest.TestCase):
             with self.assertRaises(hw.ConversionCancelled):
                 write_pdf(paths, pdf, cancel=lambda: True)
             self.assertEqual(pdf.read_bytes(), old)
+
+    def test_pdf_only_publishes_one_file_and_replaces_own_complete_result(self):
+        from PIL import PdfParser
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root/'notes.md'; source.write_text('的'*900, encoding='utf-8')
+            output = root/'out'
+            result = generate_document(source, outdir=output, export_format='pdf', jitter=0, glyph_variation=0)
+            self.assertEqual(len(list(output.iterdir())), 1)
+            pdf = Path(result[0]); self.assertEqual(pdf.suffix, '.pdf')
+            self.assertEqual(result.page_count, 2)
+            original = pdf.read_bytes()
+            with self.assertRaises(hw.ConversionCancelled):
+                generate_document(source, outdir=output, export_format='pdf', cancel=lambda: True)
+            self.assertEqual(pdf.read_bytes(), original)
+            source.write_text('短文', encoding='utf-8')
+            again = generate_document(source, outdir=output, export_format='pdf', jitter=0, glyph_variation=0)
+            self.assertEqual(again[0], str(pdf))
+            self.assertEqual(len(list(output.iterdir())), 1)
+            with PdfParser.PdfParser(filename=str(pdf)) as document:
+                self.assertEqual(len(document.pages), 1)
+
+    def test_pdf_only_does_not_overwrite_unrelated_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); source = root/'notes.md'; source.write_text('内容', encoding='utf-8')
+            output = root/'out'; output.mkdir()
+            existing = output/'notes.pdf'; existing.write_bytes(b'unrelated user file')
+            result = generate_document(source, outdir=output, export_format='pdf', jitter=0, glyph_variation=0)
+            self.assertNotEqual(result[0], str(existing))
+            self.assertEqual(existing.read_bytes(), b'unrelated user file')
 
 
 if __name__ == '__main__':

@@ -50,6 +50,16 @@ class WordReaderTests(unittest.TestCase):
                 self.assertEqual(read_docx(path), '保留')
             self.assertTrue(any('图片' in str(n.message) for n in notices))
 
+    def test_native_word_table_remains_a_table_in_application(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.document(directory, '''<w:tbl><w:tr><w:tc><w:p><w:r><w:t>项目</w:t></w:r></w:p></w:tc>
+              <w:tc><w:p><w:r><w:t>值</w:t></w:r></w:p></w:tc></w:tr>
+              <w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc>
+              <w:tc><w:p><w:r><w:t>2</w:t></w:r></w:p></w:tc></w:tr></w:tbl>''')
+            blocks = hw.markdown_to_blocks(hw.read_input(path))
+            tables = [block for block in blocks if block[0] == 'table']
+            self.assertEqual(tables[0][1], [['项目', '值'], ['A', '2']])
+
     def test_inherited_heading_and_radical_superscript(self):
         with tempfile.TemporaryDirectory() as directory:
             styles = f'''<w:styles xmlns:w="{NS['w']}">

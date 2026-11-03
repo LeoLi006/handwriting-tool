@@ -235,40 +235,66 @@ def _emit_text(s, blocks, style="text", lvl=0):
 
 
 def markdown_to_blocks(md: str):
-    """把 markdown 拆成 [('heading',lvl,txt)|('text',txt)|('bullet',txt)|
-    ('formula',latex)|('rule',)]。"""
-    md = re.sub(r"```.*?```", "", md, flags=re.S)
-    blocks, buf = [], []
+    """Keep tables and fenced diagrams rather than silently discarding them."""
+    from structured_content import split_table_row, table_separator
+    blocks, buf, lines = [], [], md.splitlines()
 
     def flush():
         if buf:
             _emit_text(" ".join(buf), blocks)
             buf.clear()
 
-    for raw in md.splitlines():
+    index = 0
+    in_display = False
+    while index < len(lines):
+        raw = lines[index]
         st = raw.strip()
+        fence = re.match(r'^(`{3,}|~{3,})([^\s]*)\s*$', st)
+        if fence and not in_display:
+            flush()
+            marker, language = fence.groups()
+            content = []
+            index += 1
+            while index < len(lines) and not re.fullmatch(re.escape(marker[0]) + '{' + str(len(marker)) + r',}\s*', lines[index].strip()):
+                content.append(lines[index]); index += 1
+            blocks.append(('diagram', '\n'.join(content), language or 'text'))
+            index += 1
+            continue
+        if not in_display and index + 1 < len(lines) and '|' in st and table_separator(lines[index + 1]):
+            flush()
+            rows = [split_table_row(raw)]
+            index += 2
+            while index < len(lines) and lines[index].strip() and '|' in lines[index]:
+                rows.append(split_table_row(lines[index])); index += 1
+            columns = max(len(row) for row in rows)
+            rows = [(row + [''] * columns)[:columns] for row in rows]
+            blocks.append(('table', rows))
+            continue
+        index += 1
         if st.startswith('<!--mojian:') and st.endswith('-->'):
             flush(); blocks.append(('location', st[11:-3])); continue
+        # Do not interpret a formula row beginning with '-' or '#' as Markdown.
+        dollars = len(re.findall(r'(?<!\\)\$\$', st))
+        if in_display or dollars:
+            buf.append(st)
+            if dollars % 2:
+                in_display = not in_display
+            continue
         if not st:
             flush(); continue
         if re.fullmatch(r"[-*_]{3,}", st):
             flush(); blocks.append(("rule",)); continue
-        m = re.match(r"^(#{1,6})\s*(.+)$", st)
-        if m:
+        match = re.match(r"^(#{1,6})\s*(.+)$", st)
+        if match:
             flush()
-            _emit_text(_clean_md(m.group(2)), blocks,
-                       style="heading", lvl=len(m.group(1)))
+            _emit_text(_clean_md(match.group(2)), blocks, style='heading', lvl=len(match.group(1)))
             continue
-        m = re.match(r"^[-*+]\s+(.+)$", st)
-        if m:
-            flush(); _emit_text(_clean_md(m.group(1)), blocks, style="bullet")
-            continue
-        m = re.match(r"^(\d+[.)])\s+(.+)$", st)
-        if m:
-            flush()
-            _emit_text(f"{m.group(1)} {_clean_md(m.group(2))}", blocks,
-                       style="bullet")
-            continue
+        match = re.match(r"^[-*+]\s+(.+)$", st)
+        if match:
+            flush(); _emit_text(_clean_md(match.group(1)), blocks, style='bullet'); continue
+        match = re.match(r"^(\d+[.)])\s+(.+)$", st)
+        if match:
+            flush(); _emit_text(f'{match[1]} {_clean_md(match[2])}', blocks, style='bullet'); continue
         buf.append(_clean_md(st))
     flush()
     return blocks
@@ -487,49 +513,53 @@ class Renderer:
 
     # -- 绘制 ---------------------------------------------------------------
     def _draw_flow(self, items, size, indent=0):
-        if not items:
-            return
-        self._ensure(self._metrics(size)[0] + self._metrics(size)[1])
-        ascent = self._metrics(size)[0]
-        x = self.left + indent
-        limit = self.w - self.right
-        for kind, val in items:
+        """Lay out one line before painting so tall formulae cannot overlap text."""
+        ascent, descent = self._metrics(size)
+        available = self.w-self.left-self.right-indent
+        parts, used, above, below = [], 0.0, ascent, descent
+
+        def flush():
+            nonlocal parts, used, above, below
+            if not parts:
+                return
+            height = above+below
+            self._ensure(height)
+            baseline = self.y+above
+            for kind, value, offset in parts:
+                x = self.left+indent+offset
+                if kind == 'math':
+                    self.page.paste(value.image, (round(x), round(baseline-value.above)), value.image)
+                elif value != ' ':
+                    for char in value:
+                        self._draw_char(char, x+self._gauss(size*.03*self.jitter),
+                                        baseline+self._gauss(size*.03*self.jitter), size)
+                        x += max(1, self._adv(char, size)+self.word_spacing+self._gauss(size*.02*self.jitter))
+            self.y += max(self.line_spacing, height+round(size*.12))
+            parts, used, above, below = [], 0.0, ascent, descent
+
+        for kind, value in items:
             self.check_cancel()
-            if kind == "text":
-                for tok, tw in self._tokens(val, size):
-                    if tok == " ":
-                        x += tw
-                        continue
-                    tw += self.word_spacing * len(tok)
-                    if x + tw > limit and x > self.left + indent:
-                        self.y += self.line_spacing
-                        self._ensure(ascent + self._metrics(size)[1])
-                        x = self.left + indent
-                    cx = x
-                    j = self.jitter
-                    for ch in tok:
-                        if cx + self._adv(ch, size) > limit and cx > self.left + indent:
-                            self.y += self.line_spacing
-                            self._ensure(ascent + self._metrics(size)[1])
-                            cx = self.left + indent
-                        self._draw_char(
-                            ch,
-                            cx + self._gauss(size * 0.03 * j),
-                            self.y + ascent + self._gauss(size * 0.03 * j),
-                            size)
-                        cx += self._adv(ch, size) + self.word_spacing \
-                            + self._gauss(size * 0.02 * j)
-                    x = cx
-            else:                                   # math
-                fi = val
-                if x + fi.width > limit and x > self.left + indent:
-                    self.y += self.line_spacing
-                    self._ensure(ascent + self._metrics(size)[1])
-                    x = self.left + indent
-                py = self.y + ascent - fi.above
-                self.page.paste(fi.image, (int(x), int(py)), fi.image)
-                x += fi.width + size * 0.18
-        self.y += self.line_spacing
+            if kind == 'math':
+                scale = min(1, available/max(1, value.width),
+                            (self.h-self.top-self.bottom)*.9/max(1, value.height))
+                if scale < 1:
+                    value = fml.Formula(value.image.resize((max(1, round(value.width*scale)), max(1, round(value.height*scale))), Image.Resampling.LANCZOS),
+                                        round(value.depth*scale), value.source)
+                if used and used+value.width > available:
+                    flush()
+                parts.append(('math', value, used))
+                used += value.width+size*.18
+                above, below = max(above, value.above), max(below, value.depth)
+            else:
+                for token, measured in self._tokens(value, size):
+                    width = max(1, measured+self.word_spacing*len(token))
+                    tokens = list(token) if width > available else [token]
+                    for word in tokens:
+                        width = max(1, self._adv(word, size)+self.word_spacing*len(word))
+                        if used and used+width > available:
+                            flush()
+                        parts.append(('text', word, used)); used += width
+        flush()
 
     def _draw_display_formula(self, latex):
         try:
@@ -545,14 +575,9 @@ class Renderer:
                 fi.image.resize((max(1, int(fi.width * s)),
                                  max(1, int(fi.height * s)))),
                 int(fi.depth * s), fi.source)
-        gap = int(self.line_spacing * 0.35)
-        self._ensure(fi.height + gap + self.ascent)
-        base = self.y + self.ascent
-        top_y = base - fi.above
-        if top_y < self.top:                         # 防止超出上边界
-            self.y += (self.top - top_y)
-            base = self.y + self.ascent
-            top_y = base - fi.above
+        gap = max(6, int(self.line_spacing*.18))
+        self._ensure(fi.height+2*gap)
+        top_y = self.y+gap
         cx = self.left + max(0, (maxw - fi.width) // 2)
         self.page.paste(fi.image, (int(cx), int(top_y)), fi.image)
         self.y = top_y + fi.height + gap
@@ -570,6 +595,22 @@ class Renderer:
         kind = block[0]
         if kind == 'location':
             self.location = block[1]
+        elif kind == 'table':
+            from table_render import draw_table
+            draw_table(self, block[1])
+        elif kind == 'diagram':
+            from structured_content import diagram_image
+            width = self.w-self.left-self.right
+            maximum_height = self.h-self.top-self.bottom-self.line_spacing
+            image = diagram_image(block[1], self.body, max(20, round(self.size*.8)), width, block[2],
+                                  max_height=maximum_height, cancel_check=self.check_cancel)
+            if image.height > maximum_height:
+                factor = maximum_height/image.height
+                image = image.resize((max(1, round(image.width*factor)), maximum_height), Image.Resampling.LANCZOS)
+                warnings.warn(f'{self.location}：较大的字符示意图已整体缩小，请检查标签可读性。', UserWarning)
+            self._ensure(image.height+self.line_spacing*.4)
+            self.page.paste(image, (round(self.left+(width-image.width)/2), round(self.y)), image)
+            self.y += image.height+self.line_spacing*.4
         elif kind == "formula":
             if formula:
                 self._draw_display_formula(block[1])
@@ -698,7 +739,7 @@ def main():
                     help="独立的字形变化强度(0=关闭, 默认 1, 1.8 起达到上限)")
     ap.add_argument("--max-pages", type=int, default=0, help="最多输出几页(0=全部)")
     ap.add_argument("--page", type=int, default=0, help="只输出第几页(0=全部)")
-    ap.add_argument('--pdf', action='store_true', help='同时导出整份 PDF（PNG 保留供预览）')
+    ap.add_argument('--pdf', action='store_true', help='只导出一个 PDF 文件，不保留 PNG 或结果文件夹')
     args = ap.parse_args()
 
     if args.list_fonts:
@@ -707,8 +748,8 @@ def main():
     if not args.input:
         ap.error("需要提供输入的 .md 文件 (或用 --list-fonts 查看字体)")
 
-    outdir = args.outdir or os.path.join(
-        os.path.dirname(os.path.abspath(args.input)), "手写体")
+    parent = os.path.dirname(os.path.abspath(args.input))
+    outdir = args.outdir or (parent if args.pdf else os.path.join(parent, '手写体'))
     from managed_output import generate_document
     paths = generate_document(
         args.input, outdir, font=args.font, font_size=args.font_size,
@@ -716,8 +757,8 @@ def main():
         formula=not args.no_formula,
         line_spacing_ratio=args.line_spacing, word_spacing=args.word_spacing,
         jitter=args.jitter, glyph_variation=args.glyph_variation,
-        page=args.page, max_pages=args.max_pages, export_format='both' if args.pdf else 'png')
-    print(f"完成: 共 {len(paths)} 页, 输出到 {outdir}")
+        page=args.page, max_pages=args.max_pages, export_format='pdf' if args.pdf else 'png')
+    print(f"完成: 共 {getattr(paths, 'page_count', len(paths))} 页, 输出到 {paths[0] if args.pdf and paths else outdir}")
 
 
 if __name__ == "__main__":

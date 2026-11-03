@@ -55,7 +55,7 @@ def _hex(color):
 # ---------------------------------------------------------------------------
 
 # 两参数命令(分数线/组合等): 统一写成 \frac{}{}
-_TWOARG = {"frac", "dfrac", "tfrac", "cfrac", "binom"}
+_TWOARG = {"frac", "dfrac", "tfrac", "cfrac", "binom", "overset", "underset"}
 
 # 单参数命令: 统一补花括号, 如 \hat p -> \hat{p}
 _ONEARG = {
@@ -84,13 +84,18 @@ _CMD_MAP = {
 def _match_brace(s, i):
     """s[i]=='{', 返回配对的 '}' 之后的下标。"""
     depth = 0
-    for j in range(i, len(s)):
+    j = i
+    while j < len(s):
+        if s[j] == '\\' and j + 1 < len(s) and s[j+1] in '{}':
+            j += 2
+            continue
         if s[j] == "{":
             depth += 1
         elif s[j] == "}":
             depth -= 1
             if depth == 0:
                 return j + 1
+        j += 1
     return len(s)
 
 
@@ -138,8 +143,9 @@ def normalize(s: str) -> str:
             if name in _TWOARG:
                 a1, j = _read_arg(s, j)
                 a2, j = _read_arg(s, j)
-                out.append("\\frac{%s}{%s}" %
-                           (normalize(_strip_braces(a1)),
+                command = 'frac' if name in {'frac', 'dfrac', 'tfrac', 'cfrac'} else name
+                out.append("\\%s{%s}{%s}" %
+                           (command, normalize(_strip_braces(a1)),
                             normalize(_strip_braces(a2))))
                 i = j
                 continue
@@ -151,9 +157,21 @@ def normalize(s: str) -> str:
                 i = j
                 continue
             if name in _ONEARG or name in _ONEARG_ALIAS:
+                if name == 'sqrt' and s[j:].lstrip().startswith('['):
+                    begin = s.index('[', j)
+                    end = s.find(']', begin)
+                    if end == -1:
+                        raise ValueError('根号的次数括号不完整')
+                    argument, j = _read_arg(s, end+1)
+                    out.append(r'\sqrt[' + normalize(s[begin+1:end]) + ']{' + normalize(_strip_braces(argument)) + '}')
+                    i = j
+                    continue
                 a1, j = _read_arg(s, j)
                 out_name = _ONEARG_ALIAS.get(name, name)
-                out.append("\\%s{%s}" % (out_name, normalize(_strip_braces(a1))))
+                content = _strip_braces(a1)
+                if name in {'text', 'mbox'}:
+                    content = content.replace('$', '')
+                out.append("\\%s{%s}" % (out_name, normalize(content)))
                 i = j
                 continue
             if name in _CMD_MAP:
@@ -313,6 +331,49 @@ def _compose(parts, font_size, gap):
     return Formula(canvas, depth, "compose")
 
 
+def _boxed_segments(text):
+    """Find complete top-level boxes; environments recurse through their cells."""
+    parts, start, index, depth, environment = [], 0, 0, 0, 0
+    while index < len(text):
+        match = re.match(r'\\(begin|end)\{[^}]+\}', text[index:])
+        if match:
+            environment += 1 if match[1] == 'begin' else -1
+            index += match.end()
+            continue
+        box = re.match(r'\\(?:boxed|fbox)\s*\{', text[index:])
+        if box and depth == 0 and environment == 0:
+            brace = index + box.end() - 1
+            end = _match_brace(text, brace)
+            if end > len(text) or text[end - 1] != '}':
+                raise ValueError('方框答案的花括号不完整')
+            if index > start:
+                parts.append(('tex', text[start:index]))
+            parts.append(('box', text[brace + 1:end - 1]))
+            index = start = end
+            continue
+        if text[index] == '\\':
+            command = re.match(r'\\(?:[A-Za-z]+|.)', text[index:])
+            index += command.end() if command else 1
+            continue
+        if text[index] == '{':
+            depth += 1
+        elif text[index] == '}':
+            depth -= 1
+        index += 1
+    if parts and start < len(text):
+        parts.append(('tex', text[start:]))
+    return parts
+
+
+def _frame_formula(formula, font_size, color):
+    pad = max(6, round(font_size * 0.22))
+    canvas = Image.new('RGBA', (formula.width + 2 * pad, formula.height + 2 * pad))
+    canvas.paste(formula.image, (pad, pad), formula.image)
+    ImageDraw.Draw(canvas).rectangle((1, 1, canvas.width - 2, canvas.height - 2),
+                                    outline=tuple(color[:3]) + (255,), width=max(1, round(font_size / 24)))
+    return Formula(canvas, formula.depth + pad, 'boxed')
+
+
 def render_formula(latex: str, font_path: str = DEFAULT_FONT, font_size: int = 40,
                    dpi: int = 150, color=(28, 30, 66)) -> Formula:
     """渲染单个公式, 返回 Formula。font_size 为像素(与正文一致)。"""
@@ -322,6 +383,22 @@ def render_formula(latex: str, font_path: str = DEFAULT_FONT, font_size: int = 4
 
     stripped = re.sub(r"^\$\$?", "", latex.strip())
     stripped = re.sub(r"\$\$?$", "", stripped).strip()
+
+    boxes = _boxed_segments(stripped)
+    if boxes:
+        parts = []
+        for kind, content in boxes:
+            if not content.strip():
+                continue
+            piece = render_formula(content, font_path, font_size, dpi, color)
+            parts.append(_frame_formula(piece, font_size, color) if kind == 'box' else piece)
+        f = parts[0] if len(parts) == 1 else _compose(parts, font_size, int(font_size * .18))
+        _cache[key] = f
+        return f
+
+    if re.fullmatch(r'(?:\s|\\(?:qquad|quad|[,;:!]))+', stripped):
+        width = max(1, int(font_size * (2 * stripped.count(r'\qquad') + stripped.count(r'\quad') + .3)))
+        return Formula(Image.new('RGBA', (width, 1)), 0, stripped)
 
     # 环境(cases/aligned/matrix...)可能出现在公式中间, 如 V(x)=\begin{cases}...
     # 拆成 文本片段 + 环境片段, 各自渲染后按基线横向拼接。
