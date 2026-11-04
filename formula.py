@@ -384,6 +384,42 @@ def render_formula(latex: str, font_path: str = DEFAULT_FONT, font_size: int = 4
     stripped = re.sub(r"^\$\$?", "", latex.strip())
     stripped = re.sub(r"\$\$?$", "", stripped).strip()
 
+    # Mathtext cannot place our custom boxes inside fraction arguments.
+    # Compose the owning fraction recursively instead of flattening the TeX.
+    for match in re.finditer(r'\\(?:frac|dfrac|tfrac)\s*\{', stripped):
+        brace = match.end()-1
+        first_end = _match_brace(stripped, brace)
+        second_start = first_end
+        while second_start < len(stripped) and stripped[second_start].isspace():
+            second_start += 1
+        if second_start >= len(stripped) or stripped[second_start] != '{':
+            continue
+        second_end = _match_brace(stripped, second_start)
+        numerator = stripped[brace+1:first_end-1]
+        denominator = stripped[second_start+1:second_end-1]
+        if not re.search(r'\\(?:boxed|fbox)\b', numerator+denominator):
+            continue
+        # Only handle a fraction outside enclosing braces/environments here.
+        prefix = stripped[:match.start()]
+        if prefix.count('{') != prefix.count('}') or r'\begin' in prefix:
+            continue
+        num = render_formula(numerator, font_path, max(12, round(font_size*.85)), dpi, color)
+        den = render_formula(denominator, font_path, max(12, round(font_size*.85)), dpi, color)
+        gap = max(4, round(font_size*.15)); width = max(num.width,den.width)+2*gap
+        canvas = Image.new('RGBA',(width,num.height+den.height+4*gap))
+        canvas.alpha_composite(num.image,((width-num.width)//2,0))
+        bar_y = num.height+gap
+        ImageDraw.Draw(canvas).line((0,bar_y,width,bar_y),fill=tuple(color[:3])+(255,),width=2)
+        canvas.alpha_composite(den.image,((width-den.width)//2,num.height+3*gap))
+        fraction = Formula(canvas,canvas.height-bar_y-round(font_size*.25),'fraction')
+        parts=[]
+        if prefix.strip(): parts.append(render_formula(prefix,font_path,font_size,dpi,color))
+        parts.append(fraction)
+        if stripped[second_end:].strip(): parts.append(render_formula(stripped[second_end:],font_path,font_size,dpi,color))
+        result = _compose(parts,font_size,max(1,round(font_size*.1))) if len(parts)>1 else fraction
+        _cache[key]=result
+        return result
+
     boxes = _boxed_segments(stripped)
     if boxes:
         parts = []

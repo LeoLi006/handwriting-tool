@@ -21,6 +21,7 @@ def _cell_lines(renderer, text, width, size):
             if kind == 'math':
                 scale = min(1, width/max(1, value.width), (renderer.h-renderer.top-renderer.bottom)*.5/max(1, value.height))
                 if scale < 1:
+                    renderer.issue('警告', '表格公式', f'{renderer.location}：公式已等比缩放至 {scale:.0%}，请检查可读性')
                     from formula import Formula
                     value = Formula(value.image.resize((max(1, round(value.width*scale)), max(1, round(value.height*scale))), Image.Resampling.LANCZOS),
                                     round(value.depth*scale), value.source)
@@ -54,13 +55,27 @@ def draw_table(renderer, rows):
     widths = [width//columns]*columns
     widths[-1] += width-sum(widths)
     origin = renderer.location
+    source_line = renderer.source_line
+    if min(widths)-2*pad < size*2.2:
+        renderer.issue('警告', '表格密度', f'{columns} 列导致单元格过窄，已逐字换行；建议拆分表格或减少列数')
+    if min(widths)-2*pad < size:
+        renderer.issue('替代', '超宽表格', '列宽不足以容纳一个中文字符，已采用逐行字段显示，保留所有单元格')
+        for row_index, row in enumerate(rows[1:], 2):
+            renderer.source_line=source_line+row_index
+            renderer._draw_flow([('text',f'表格第 {row_index-1} 条')],size)
+            for header, value in zip(rows[0],row):
+                renderer._draw_flow(renderer._inline_items(f'{header}：{value}'),size,indent=size)
+        renderer.source_line=source_line
+        return
 
     def plan(row, row_index):
         result = []
         for column, (text, cell_width) in enumerate(zip(row, widths), 1):
             renderer.location = f'{origin}/表格第 {row_index} 行第 {column} 列'
+            renderer.source_line = source_line + (row_index if row_index > 1 else 0)
             result.append(_cell_lines(renderer, text, max(1, cell_width-2*pad), size))
         renderer.location = origin
+        renderer.source_line = source_line
         return result
 
     def height(cells):
@@ -70,6 +85,7 @@ def draw_table(renderer, rows):
         used = [sum(line['height'] for line in cell[start:end]) for cell, start, end in zip(cells, offsets, ends)]
         row_height = max(used) + 2*pad
         top = renderer.y
+        renderer.record_region('表格行', (renderer.left,top,renderer.w-renderer.right,top+row_height))
         renderer.draw.rectangle((renderer.left, top, renderer.w-renderer.right, top+row_height), fill=(255,255,255))
         x = renderer.left
         for cell, start, end, cell_width in zip(cells, offsets, ends, widths):

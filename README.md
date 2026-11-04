@@ -4,7 +4,7 @@
 
 ## 开始使用
 
-需要 Python 3.9+。下载仓库的 ZIP 并解压，在项目目录运行：
+需要带 tkinter 的 Python 3.10+。下载仓库的 ZIP 并解压，在项目目录运行：
 
 ```bash
 python -m pip install -r requirements.txt
@@ -29,6 +29,9 @@ Windows 请双击 **`启动GUI.vbs`**，直接打开 GUI，不显示终端。`�
 - 每份文件独立执行，一个失败后继续后续文件；“只重试失败项”不会重做成功文件。
 - “取消当前批次”停止当前转换和待执行任务；排版逐字检查取消，PDF 逐页检查。已经完成的文件保留。
 - 全文转换逐页写盘，避免把所有 A4 图片同时保存在内存中。
+- 页码框可直接跳页，“刷新当前页”复用未失效的页面；双击预览或点击“局部放大”后用滚轮缩放、拖动平移。
+- 缓存最多保留三组输入/参数，依据文档、参数、引用图片和字体内容失效。未缓存的后页需要从开头排版到该页，不继续排版全文。
+- 问题清单区分错误、警告、替代显示，记录源行、章节、对象与页码；双击问题可跳页。PNG 另存 JSON/TXT 清单，单文件 PDF 不增加伴随文件。
 
 ## 表格、示意图与方框答案
 
@@ -37,6 +40,10 @@ Windows 请双击 **`启动GUI.vbs`**，直接打开 GUI，不显示终端。`�
 - 围栏中的字符示意图不再删除。`text` / `ascii` / `diagram` / `polezero` 中的坐标轴、边界线、箭头、× 和 ○ 会按原文位置绘制，中文标签保留。
 - 支持 `\boxed{...}` / `\fbox{...}`，包括并列方框和 aligned 中的方框答案。
 - 高公式按真实高度排版，避免方框或根号碰到前后文字。
+- 支持单独一行的本地 Markdown 图片，相对路径以源文件目录为准；等比缩放并将替代文字作为图注。缺失图片显示占位并报错。
+- `plot` 围栏接受严格 JSON 坐标描述，使用 Pillow 绘制，无需新依赖，参见 [精确绘图说明](docs/精确绘图.md)。不运行 Python、JavaScript 或其他文档代码。
+- 正文、公式、表格文字和图形的变化强度独立；三个预设默认让公式、表格与图形保持规整。
+- 自动限制超宽/超高对象、保护页底标题，检查内容区域重叠和边界，提示过密表格、缺字及图与说明跨页。它不验证数学结论，也不能替代视觉检查。
 
 这是对字符示意图的重绘，不会识别截图、扫描图或任意绘图脚本。复杂 LaTeX 不支持时仍会列出问题，供核对。
 
@@ -93,7 +100,14 @@ python handwriting.py "examples/示例.md" --max-pages 1
 
 ```bash
 python -m unittest discover -s tests -v
+python tools/run_regression.py --output output/regression
+python tools/check_gui.py
+python tools/build_portable.py
 ```
+
+回归入口：[原创综合 Markdown](examples/regression/综合回归.md)、[逐项检查记录](docs/综合回归检查.md)。`build_regression_sample.py` 可重新生成同样的 Markdown 和三张原创本地图片。回归命令分别导出 PNG、单文件 PDF，验证首页一致与缓存命中；安装 Poppler 后可加 `--poppler 路径` 检查所有 PDF 页面。仍需逐页核对视觉结果。
+
+分享命令输出 `dist/handwriting-tool-base.zip` 和大小/校验清单，仅携带两款基础字体、代码、说明与原创样本，不含 Git 历史、可选字体、Python 或运行依赖。完整解压后双击 `启动GUI.vbs`。接收者需先安装带 tkinter 的 Python 3.10+；首次补齐依赖/下载可选字体需要联网，之后可离线使用。不是免 Python 的独立 EXE。已移除未使用的 handright 依赖。
 
 核心模块：`gui.py`（界面）、`app_settings.py`（设置/预设）、`handwriting.py`（排版）、`batch_tasks.py`（批量任务）、`managed_output.py`（结果发布）、`word_reader.py`（Word）、`formula.py`（公式）、`font_manager.py`（字体）、`pdf_export.py`（PDF）。
 

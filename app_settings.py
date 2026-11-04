@@ -11,8 +11,12 @@ PRESETS = {
     '紧凑复习': dict(font='WenKai', font_size=34, line_spacing_ratio=1.15,
                    word_spacing=-1, jitter=0.1, glyph_variation=0.5, ruled=False),
 }
+for preset in PRESETS.values():
+    preset.update(formula_variation=0, table_variation=0, diagram_variation=0)
+
 LIMITS = dict(font_size=(24, 64), line_spacing_ratio=(0.9, 2.6),
-              word_spacing=(-10, 16), jitter=(0, 2.5), glyph_variation=(0, 1.8))
+              word_spacing=(-10, 16), jitter=(0, 2.5), glyph_variation=(0, 1.8),
+              formula_variation=(0,1.8), table_variation=(0,1.8), diagram_variation=(0,1.8))
 
 
 def settings_path():

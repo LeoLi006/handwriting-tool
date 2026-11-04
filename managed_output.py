@@ -15,10 +15,11 @@ import handwriting as hw
 
 class ConversionResult(list):
     """Public output paths with private preview paths for the desktop app."""
-    def __init__(self, outputs, preview_paths=None, page_count=None):
+    def __init__(self, outputs, preview_paths=None, page_count=None, issues=None):
         super().__init__(outputs)
         self.preview_paths = list(outputs if preview_paths is None else preview_paths)
         self.page_count = page_count if page_count is not None else len(self.preview_paths)
+        self.issues = list(issues or [])
 
 
 def _pdf_destination(source, root):
@@ -61,13 +62,15 @@ def _generate_single_pdf(source, outdir=None, cancel=None, page_progress=None,
             warnings.simplefilter('always', UserWarning)
             pages = hw.convert_file(source, outdir=work, cancel=cancel,
                                     page_progress=page_progress, **params)
+        from diagnostics import issue_data
+        structured_issues = issue_data(notes)
         issues = list(dict.fromkeys(str(note.message) for note in notes))
         write_pdf(pages, destination, dpi=params.get('dpi', 150), cancel=cancel,
                   subject=owner, keywords='\n'.join(issues))
         succeeded = True
         for issue in issues:
             warnings.warn(issue, UserWarning)
-        return ConversionResult([str(destination)], pages if preview_root else [], len(pages))
+        return ConversionResult([str(destination)], pages if preview_root else [], len(pages), structured_issues)
     finally:
         if not succeeded or not preview_root:
             shutil.rmtree(work)
@@ -134,7 +137,10 @@ def generate_document(source, outdir=None, cancel=None, page_progress=None,
                                     page_progress=page_progress, **params)
         if not paths:
             raise ValueError('所选页码没有可输出的页面，请检查页码范围。')
+        from diagnostics import issue_data
+        structured_issues = issue_data(notes)
         issues = list(dict.fromkeys(str(note.message) for note in notes))
+        (stage / '问题清单.json').write_text(json.dumps(structured_issues, ensure_ascii=False, indent=2), encoding='utf-8')
         (stage / '问题清单.txt').write_text('\n\n'.join(issues) if issues else '未发现已知的转写问题。', encoding='utf-8')
         pdf_name = None
         if export_format == 'both':
@@ -144,8 +150,8 @@ def generate_document(source, outdir=None, cancel=None, page_progress=None,
         if cancel and cancel():
             raise hw.ConversionCancelled('已取消转换')
         data = dict(source=source_key, generation=generation.name,
-                    generated=[Path(p).name for p in paths] + ['问题清单.txt'] + ([pdf_name] if pdf_name else []),
-                    pages=[Path(p).name for p in paths], issues=issues, pdf=pdf_name)
+                    generated=[Path(p).name for p in paths] + ['问题清单.txt', '问题清单.json'] + ([pdf_name] if pdf_name else []),
+                    pages=[Path(p).name for p in paths], issues=issues, structured_issues=structured_issues, pdf=pdf_name)
         (stage / '.generation.json').write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
         os.replace(stage, generation)
         pointer = directory / ('latest-' + uuid.uuid4().hex + '.tmp')
@@ -159,7 +165,7 @@ def generate_document(source, outdir=None, cancel=None, page_progress=None,
         _retire_previous(directory, previous, source_key)
         for issue in issues:
             warnings.warn(issue, UserWarning)
-        return [str(generation / name) for name in data['pages']]
+        return ConversionResult([str(generation / name) for name in data['pages']], issues=structured_issues)
     finally:
         if stage.exists():
             shutil.rmtree(stage)

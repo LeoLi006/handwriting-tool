@@ -23,6 +23,7 @@ def run_batch(jobs, params, cancel, notify, converter=None):
                 result = dict(job, status='完成', paths=paths,
                               preview_paths=list(getattr(paths, 'preview_paths', paths)),
                               page_count=getattr(paths, 'page_count', len(paths)),
+                              issues=list(getattr(paths, 'issues', [])),
                               notices=list(dict.fromkeys(str(n.message) for n in notes)), error='')
             except hw.ConversionCancelled:
                 result = dict(job, status='已取消', paths=[], notices=[], error='')

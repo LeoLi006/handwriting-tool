@@ -4,6 +4,9 @@ __pycache__/
 venv/
 .env
 .env.*
+tmp/
+dist/
+output/
 fonts/_merged_*.ttf
 fonts/*.ttf
 !fonts/LXGWWenKai-Regular.ttf

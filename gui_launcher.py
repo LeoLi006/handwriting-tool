@@ -23,25 +23,40 @@ def main():
                 pass
         import tkinter as tk
         from tkinter import messagebox, ttk
-        missing = [name for name in ('handright', 'fontTools', 'PIL', 'matplotlib', 'tkinterdnd2')
+        if sys.version_info < (3, 10):
+            raise RuntimeError('需要 Python 3.10 或更新版本，并包含 tkinter。请安装后重新启动。')
+        for filename in ('fonts/LXGWWenKai-Regular.ttf', 'fonts/MaShanZheng-Regular.ttf'):
+            if not (base/filename).is_file():
+                raise RuntimeError(f'基础字体缺失：{filename}。请完整解压分享包，不要直接在压缩包内启动。')
+        missing = [name for name in ('fontTools', 'PIL', 'matplotlib', 'tkinterdnd2')
                    if importlib.util.find_spec(name) is None]
         if missing:
             root = tk.Tk(); root.title('墨笺 · 首次启动')
-            root.geometry('460x150'); root.resizable(False, False)
-            tk.Label(root, text='正在安装运行依赖，请稍候…', font=('Microsoft YaHei UI', 12)).pack(pady=(24, 10))
+            root.geometry('520x240'); root.resizable(False, False)
+            tk.Label(root, text='首次运行：正在安装依赖，需要联网', font=('Microsoft YaHei UI', 12)).pack(pady=(20, 10))
+            tk.Label(root, text='缺少：'+', '.join(missing)+'\n安装失败可查看日志并重试；已安装后可离线转换。', wraplength=480).pack(pady=6)
             bar = ttk.Progressbar(root, mode='indeterminate'); bar.pack(fill='x', padx=28); bar.start()
             process = subprocess.Popen([sys.executable, '-m', 'pip', 'install', '-r', str(base/'requirements.txt')],
                                        stdout=log, stderr=log, cwd=base,
                                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            cancelled = [False]
+            def cancel_install():
+                cancelled[0] = True
+                if process.poll() is None:
+                    process.terminate()
+            ttk.Button(root, text='取消安装', command=cancel_install).pack(pady=10)
             def finish():
                 if process.poll() is None:
                     root.after(200, finish); return
                 root.destroy()
             root.after(200, finish)
-            root.protocol('WM_DELETE_WINDOW', lambda: None)
+            root.protocol('WM_DELETE_WINDOW', cancel_install)
             root.mainloop()
+            if cancelled[0]:
+                print('用户取消了首次依赖安装，可重新启动后重试。')
+                return
             if process.returncode:
-                raise RuntimeError(f'依赖安装未完成，请检查网络。详细日志：{log_path}')
+                raise RuntimeError(f'依赖安装未完成（退出码 {process.returncode}）。请检查网络或 Python 写入权限。\n可手动运行："{sys.executable}" -m pip install -r "{base / "requirements.txt"}"\n详细日志：{log_path}')
         import gui
         gui.main()
     except (Exception, SystemExit) as exc:

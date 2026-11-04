@@ -6,7 +6,7 @@ r"""
 运行:
     python 手写体工具/gui.py     (或双击 启动GUI.vbs，无终端)
 
-依赖: handright, fonttools, pillow, tkinterdnd2, matplotlib
+依赖: fonttools, pillow, tkinterdnd2, matplotlib
 """
 
 import os
@@ -40,6 +40,7 @@ from app_settings import PRESETS, load_settings, save_settings
 from batch_tasks import run_batch
 import font_manager
 from ui_scaling import ResponsiveFonts
+from preview_cache import PreviewCache, fingerprint
 
 ACCENT = "#29796b"
 BG = "#f2f4f3"
@@ -86,6 +87,9 @@ class App:
         self._applying = False
         self._approved_snapshot = None
         self._preview_dir = tempfile.TemporaryDirectory(prefix='mojian-preview-')
+        self.preview_cache = PreviewCache(os.path.join(self._preview_dir.name,'cache'))
+        self._display_key = None
+        self._requested_page = 1
         self.cancel_event = threading.Event()
         self.jobs = []
         self._closing = False
@@ -151,7 +155,7 @@ class App:
         # Keep the conversion button visible even when the settings need scrolling.
         actions = tk.Frame(panel, bg=CARD)
         actions.pack(side="bottom", fill="x", padx=18, pady=16)
-        self.preview_btn = ttk.Button(actions, text='快速预览第一页', command=self._preview_one)
+        self.preview_btn = ttk.Button(actions, text='快速预览第一页', command=lambda: self._preview_one(1))
         self.preview_btn.pack(fill='x', pady=(0, 6))
         self.go_btn = ttk.Button(actions, text="确认生成全文", style="Primary.TButton",
                                  command=self._start, state='disabled')
@@ -210,6 +214,12 @@ class App:
         self.jitter_var = tk.DoubleVar(value=0.2); self._slider(left, self.jitter_var, 0, 2.5, None, 0.1)
         caption("字形变化强度")
         self.glyph_variation_var = tk.DoubleVar(value=1); self._slider(left, self.glyph_variation_var, 0, 1.8, None, 0.1)
+        caption('公式字迹变化（0 = 清晰规整）')
+        self.formula_variation_var = tk.DoubleVar(value=0); self._slider(left,self.formula_variation_var,0,1.8,None,.1)
+        caption('表格文字变化（独立于正文）')
+        self.table_variation_var = tk.DoubleVar(value=0); self._slider(left,self.table_variation_var,0,1.8,None,.1)
+        caption('图形变化（精确图建议为 0）')
+        self.diagram_variation_var = tk.DoubleVar(value=0); self._slider(left,self.diagram_variation_var,0,1.8,None,.1)
         divider()
         section("纸张与公式")
         self.ruled_var = tk.BooleanVar(value=True)
@@ -277,6 +287,14 @@ class App:
                                 text="选择文档后预览第一页\n\n满意后再确认生成全文", font=("Microsoft YaHei UI", 12))
         self.preview.pack(fill="both", expand=True)
         self.preview.bind("<Configure>", self._resize_preview)
+        self.preview.bind('<Double-1>', lambda e: self._zoom_preview())
+        tools = tk.Frame(preview_card, bg=CARD); tools.pack(fill='x', pady=(6, 0))
+        self.page_var = tk.StringVar(value='1')
+        ttk.Entry(tools, textvariable=self.page_var, width=5).pack(side='left')
+        ttk.Button(tools, text='跳页', command=self._goto_page).pack(side='left', padx=3)
+        ttk.Button(tools, text='刷新当前页', command=self._refresh_current).pack(side='left', padx=3)
+        ttk.Button(tools, text='局部放大', command=self._zoom_preview).pack(side='left', padx=3)
+        ttk.Button(tools, text='问题清单', command=self._job_detail).pack(side='right')
         nav = tk.Frame(preview_card, bg=CARD); nav.pack(fill="x", pady=(8, 0))
         self.prev_btn = ttk.Button(nav, text="上一页", command=lambda: self._turn_page(-1), state="disabled")
         self.prev_btn.pack(side="left")
@@ -313,7 +331,8 @@ class App:
     def _setting_variables(self):
         return dict(font_size=self.size_var, line_spacing_ratio=self.line_var,
                     word_spacing=self.word_var, jitter=self.jitter_var,
-                    glyph_variation=self.glyph_variation_var, ruled=self.ruled_var,
+                    glyph_variation=self.glyph_variation_var, formula_variation=self.formula_variation_var,
+                    table_variation=self.table_variation_var, diagram_variation=self.diagram_variation_var, ruled=self.ruled_var,
                     formula=self.formula_var, outdir=self.out_var, export_format=self.export_var)
 
     def _load_preferences(self):
@@ -469,20 +488,20 @@ class App:
                     line_spacing_ratio=float(self.line_var.get()),
                     word_spacing=float(self.word_var.get()), jitter=float(self.jitter_var.get()),
                     glyph_variation=float(self.glyph_variation_var.get()),
+                    formula_variation=float(self.formula_variation_var.get()),
+                    table_variation=float(self.table_variation_var.get()),
+                    diagram_variation=float(self.diagram_variation_var.get()),
                     formula=bool(self.formula_var.get()),
                     formula_font=os.fspath(font_manager.font_path(self.style_keys[self.fmfont_combo.current()])))
 
     def _snapshot(self):
         stats = []
         for path in self.files:
-            try:
-                stat = os.stat(path)
-                stats.append((path, stat.st_mtime_ns, stat.st_size))
-            except OSError:
-                stats.append((path, None))
+            try: stats.append(fingerprint(path, self._parameters()))
+            except OSError: stats.append((path, None))
         return repr((stats, self._parameters(), self.out_var.get(), self.export_var.get()))
 
-    def _preview_one(self):
+    def _preview_one(self, page=1, force=False):
         if self.busy:
             return
         if not self.files:
@@ -500,7 +519,8 @@ class App:
         self._approved_snapshot = None
         self.go_btn.configure(state='disabled')
         self.preview_btn.configure(state='disabled')
-        self.status.configure(text='只排版第一页，正在预览…')
+        self._requested_page = page
+        self.status.configure(text=f'正在准备第 {page} 页（缓存未命中时只排到所需页）…')
         self.output_paths = []
         self.preview_index = 0
         self._update_navigation()
@@ -509,7 +529,7 @@ class App:
         selection = self.job_tree.selection()
         job = next((j for j in self.jobs if selection and j['id'] == selection[0]), self.jobs[0])
         self._preview_jobid = job['id']
-        threading.Thread(target=self._preview_worker, args=(job['path'], params, snapshot), daemon=True).start()
+        threading.Thread(target=self._preview_worker, args=(job['path'], params, snapshot, page, force), daemon=True).start()
 
     def _font_manager(self, selected=None):
         if hasattr(self, 'font_window') and self.font_window.winfo_exists():
@@ -567,17 +587,10 @@ class App:
                 self.q.put(('font_done', key, str(exc)))
         threading.Thread(target=work, daemon=True).start()
 
-    def _preview_worker(self, path, params, snapshot):
+    def _preview_worker(self, path, params, snapshot, page=1, force=False):
         try:
-            with warnings.catch_warnings(record=True) as notices:
-                warnings.simplefilter('always', UserWarning)
-                pages, _ = hw.render_markdown(hw.read_input(path, cancel=self.cancel_event.is_set), page_limit=1,
-                                              cancel=self.cancel_event.is_set, **params)
-            for note in notices:
-                self.q.put(('notice', str(note.message)))
-            target = os.path.join(self._preview_dir.name, 'preview.png')
-            pages[0].save(target)
-            self.q.put(('preview_done', target, snapshot))
+            entry, cached = self.preview_cache.get(path, params, page, force, self.cancel_event.is_set)
+            self.q.put(('preview_done', entry, snapshot, cached))
         except Exception as exc:
             self.q.put(('preview_error', str(exc)))
 
@@ -602,6 +615,7 @@ class App:
         params = dict(self._parameters(), outdir=self.out_var.get().strip() or None,
                       export_format='pdf' if self.export_var.get() in {'PDF 文件', 'PNG + PDF'} else 'png',
                       preview_root=os.path.join(self._preview_dir.name, 'completed'))
+        self._batch_keys = {job['id']: fingerprint(job['path'], self._parameters()) for job in self.jobs}
         jobs = [job.copy() for job in self.jobs if not retry or job['status'] == '失败']
         self.prog.configure(maximum=max(1, len(jobs)))
         self._batch_completed = 0
@@ -619,20 +633,45 @@ class App:
 
     def _job_detail(self, event=None):
         selection = self.job_tree.selection()
-        if not selection:
-            return
-        job = next(j for j in self.jobs if j['id'] == selection[0])
+        job = next((j for j in self.jobs if selection and j['id'] == selection[0]), self.jobs[0] if self.jobs else None)
+        if job is None: return
         if job.get('paths') and not self.busy:
             self.output_paths = job.get('preview_paths', job['paths']); self.preview_index = 0
-            self._show_preview(self.output_paths[0]); self._update_navigation()
-        details = '\n'.join([job.get('error', ''), *job.get('notices', [])]).strip()
-        if details:
-            window = tk.Toplevel(self.root); window.title(os.path.basename(job['path']) + ' · 问题清单')
-            text = tk.Text(window, wrap='word', width=85, height=22)
-            bar = ttk.Scrollbar(window, command=text.yview); bar.pack(side='right', fill='y')
-            text.configure(yscrollcommand=bar.set); text.pack(fill='both', expand=True)
-            text.insert('1.0', details); text.configure(state='disabled')
-            self.ui_scaling.register(window)
+            self._display_key = job.get('render_key')
+            if self.output_paths: self._show_preview(self.output_paths[0]); self._update_navigation()
+        issues = job.get('issues', [])
+        window = tk.Toplevel(self.root); window.title(os.path.basename(job['path']) + ' · 转换问题')
+        window.geometry('1000x430')
+        ttk.Label(window, text='双击问题跳到对应预览页；错误占位与替代显示也保留在输出中。').pack(anchor='w', padx=12, pady=8)
+        ttk.Label(window, text=job['path'], wraplength=950).pack(anchor='w', padx=12)
+        frame = ttk.Frame(window); frame.pack(fill='both', expand=True, padx=12)
+        columns = ('severity','line','section','object','page','reason')
+        tree = ttk.Treeview(frame, columns=columns, show='headings')
+        for key, title, width in zip(columns, ('级别','源行','章节','对象','页','原因'), (60,55,150,90,45,500)):
+            tree.heading(key,text=title); tree.column(key,width=width,stretch=key in {'section','reason'})
+        bar=ttk.Scrollbar(frame,command=tree.yview); bar.pack(side='right',fill='y')
+        tree.configure(yscrollcommand=bar.set); tree.pack(fill='both',expand=True)
+        detail=tk.Text(window,wrap='word',height=4,bd=0)
+        detail.pack(fill='x',padx=12,pady=8);detail.configure(state='disabled')
+        def describe(event=None):
+            selected=tree.selection()
+            if selected and issues:
+                item=issues[int(selected[0])]
+                detail.configure(state='normal');detail.delete('1.0','end')
+                detail.insert('1.0',item['reason']);detail.configure(state='disabled')
+        tree.bind('<<TreeviewSelect>>',describe)
+        for index, item in enumerate(issues):
+            tree.insert('', 'end', iid=str(index), values=[item.get(k,'') for k in columns])
+        if not issues:
+            tree.insert('', 'end', values=('', '', '', '', '', job.get('error') or '\n'.join(job.get('notices', [])) or '未发现已知问题；这不等于视觉检查已通过。'))
+        def jump(event=None):
+            selected=tree.selection()
+            if selected and issues:
+                self.job_tree.selection_set(job['id'])
+                self.page_var.set(str(issues[int(selected[0])]['page']))
+                self._goto_page()
+        tree.bind('<Double-1>', jump)
+        self.ui_scaling.register(window)
 
     def _poll(self):
         """主线程: 定期取出后台消息并刷新界面。"""
@@ -653,18 +692,24 @@ class App:
                     self.busy = False
                     self.cancel_btn.configure(state='disabled')
                     self.preview_btn.configure(state='normal')
-                    self.output_paths = [msg[1]]
-                    self.preview_index = 0
+                    entry = msg[1]
+                    self.notices = entry['notices']
+                    self.output_paths = entry['paths']
+                    self.preview_index = min(self._requested_page, len(self.output_paths))-1
+                    self._display_key = entry['key']
                     self._update_navigation()
-                    self.page_label.configure(text='预览 · 第 1 页（全文未排版）')
-                    self._show_preview(msg[1])
+                    self._show_preview(self.output_paths[self.preview_index])
                     if msg[2] == self._snapshot():
                         self._approved_snapshot = msg[2]
                         self.go_btn.configure(state='normal')
-                        self.status.configure(text='第一页预览完成。满意后点击「确认生成全文」。' +
-                                              (f' 有 {len(self.notices)} 项内容问题，双击文件查看。' if self.notices else ''))
+                        origin = '已复用缓存' if msg[3] else '预览已更新'
+                        if self._requested_page > len(self.output_paths):
+                            origin += f'；文档仅 {len(self.output_paths)} 页，已显示最后一页'
+                        self.status.configure(text=f'{origin}；排版至第 {len(self.output_paths)} 页。' +
+                                              (f' {len(self.notices)} 项问题，可打开清单跳页。' if self.notices else '请检查版面后确认生成。'))
                         job = next(j for j in self.jobs if j['id'] == self._preview_jobid)
                         job['notices'] = self.notices.copy()
+                        job['issues'] = entry['issues']
                     else:
                         self.status.configure(text='预览期间设置已改变，请重新预览。')
                 elif kind == 'preview_error':
@@ -675,8 +720,11 @@ class App:
                 elif kind == 'job':
                     job = msg[1]
                     index = next(i for i, j in enumerate(self.jobs) if j['id'] == job['id'])
+                    if job['status'] == '完成':
+                        job['render_key'] = self._batch_keys.get(job['id'])
                     self.jobs[index] = job
-                    label = job['status'] + (f" · {len(job.get('notices', []))} 项提示" if job.get('notices') else '')
+                    content_errors = sum(item.get('severity')=='错误' for item in job.get('issues', []))
+                    label = job['status'] + (f' · {content_errors} 项内容错误' if content_errors else '') + (f" · {len(job.get('notices', []))} 项提示" if job.get('notices') else '')
                     self.job_tree.item(job['id'], values=(os.path.basename(job['path']), label))
                     if job['status'] != '转换中':
                         self._batch_completed += 1
@@ -713,6 +761,11 @@ class App:
         self.preview_btn.configure(state='normal')
         self.cancel_btn.configure(state='disabled')
         self.retry_btn.configure(state='normal' if any(j['status'] == '失败' for j in self.jobs) else 'disabled')
+        completed = next((j for j in self.jobs if j.get('preview_paths')), None)
+        if completed:
+            paths = completed['preview_paths']
+            self.job_tree.selection_set(completed['id'])
+            self._display_key = completed.get('render_key')
         self.output_paths = list(paths)
         self.preview_index = 0
         self._update_navigation()
@@ -728,16 +781,67 @@ class App:
 
     def _update_navigation(self):
         count = len(self.output_paths)
-        self.page_label.configure(text=f"{self.preview_index + 1} / {count}" if count else "尚无页面")
+        self.page_label.configure(text=f"{self.preview_index + 1} / {count} 已缓存页" if count else "尚无页面")
+        self.page_var.set(str(self.preview_index+1))
         self.prev_btn.configure(state="normal" if self.preview_index > 0 else "disabled")
         self.next_btn.configure(state="normal" if self.preview_index + 1 < count else "disabled")
 
     def _turn_page(self, offset):
-        index = self.preview_index + offset
-        if 0 <= index < len(self.output_paths):
-            self.preview_index = index
-            self._show_preview(self.output_paths[index])
-            self._update_navigation()
+        index=self.preview_index+offset
+        if 0<=index<len(self.output_paths):
+            self.page_var.set(str(index+1)); self._goto_page()
+
+    def _goto_page(self):
+        if self.busy or not self.files: return
+        try:
+            page=int(self.page_var.get())
+            if not 1<=page<=9999: raise ValueError()
+        except ValueError:
+            self.status.configure(text='请输入 1—9999 的页码。'); return
+        selection=self.job_tree.selection()
+        job=next((j for j in self.jobs if selection and j['id']==selection[0]),self.jobs[0])
+        key=fingerprint(job['path'], self._parameters())
+        if self._display_key == key and page<=len(self.output_paths):
+            self.preview_index=page-1; self._refresh_preview(); self._update_navigation()
+        else:
+            self._preview_one(page)
+
+    def _refresh_current(self):
+        if self.busy: return
+        # Current immutable output remains valid when the input and settings agree.
+        if self.files and self._approved_snapshot == self._snapshot() and self.output_paths:
+            self._refresh_preview(); self.status.configure(text='已复用当前页；参数、源文档或图片改变后会重新排版。')
+        else:
+            self._preview_one(self.preview_index+1)
+
+    def _zoom_preview(self):
+        if not self.output_paths: return
+        window=tk.Toplevel(self.root); window.title('局部放大 · 滚轮缩放，拖动平移')
+        window.geometry('900x700')
+        frame=ttk.Frame(window); frame.pack(fill='both',expand=True)
+        canvas=tk.Canvas(frame,bg='#dfe6e2',highlightthickness=0)
+        vertical=ttk.Scrollbar(frame,orient='vertical',command=canvas.yview)
+        horizontal=ttk.Scrollbar(frame,orient='horizontal',command=canvas.xview)
+        vertical.pack(side='right',fill='y'); horizontal.pack(side='bottom',fill='x')
+        canvas.pack(fill='both',expand=True); canvas.configure(xscrollcommand=horizontal.set,yscrollcommand=vertical.set)
+        with Image.open(self.output_paths[self.preview_index]) as original: source=original.copy()
+        scale=[1.0]
+        def paint(event=None):
+            cx=canvas.canvasx(event.x) if event else 0
+            cy=canvas.canvasy(event.y) if event else 0
+            old=scale[0]
+            if event: scale[0]=max(.25,min(3,old*(1.25 if event.delta>0 else .8)))
+            size=(max(1,round(source.width*scale[0])),max(1,round(source.height*scale[0])))
+            canvas.image=ImageTk.PhotoImage(source.resize(size,Image.Resampling.LANCZOS))
+            canvas.delete('all'); canvas.create_image(0,0,image=canvas.image,anchor='nw')
+            canvas.configure(scrollregion=(0,0,*size))
+            if event:
+                canvas.xview_moveto(max(0,(cx*scale[0]/old-event.x)/size[0]))
+                canvas.yview_moveto(max(0,(cy*scale[0]/old-event.y)/size[1]))
+        canvas.bind('<MouseWheel>',paint)
+        canvas.bind('<ButtonPress-1>',lambda e:canvas.scan_mark(e.x,e.y))
+        canvas.bind('<B1-Motion>',lambda e:canvas.scan_dragto(e.x,e.y,gain=1))
+        paint(); self.ui_scaling.register(window)
 
     def _resize_preview(self, event):
         if hasattr(self, '_preview_resize_id'):

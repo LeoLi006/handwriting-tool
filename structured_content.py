@@ -188,8 +188,8 @@ def diagram_image(text, font_path, size, max_width, language='text', max_height=
                     break
         draw.line(points, fill=ink, width=stroke)
     fit = min(1, max_width/image.width, max_height/image.height)
-    if fit*factor < .4:
-        warnings.warn('字符图尺寸过大，已整体缩小；建议拆分后检查标签可读性。', UserWarning)
+    if fit*factor < .999:
+        warnings.warn(f'字符图尺寸过大，已整体缩小至 {fit*factor:.0%}；请检查标签可读性，过小时建议拆分。', UserWarning)
     if fit < 1:
         image = image.resize((max(1, round(image.width*fit)), max(1, round(image.height*fit))), Image.Resampling.LANCZOS)
     return image

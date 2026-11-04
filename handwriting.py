@@ -16,6 +16,9 @@ Markdown(.md) -> 手写体图片 转换引擎（混合排版）
 """
 
 import argparse
+from pathlib import Path
+from contextlib import contextmanager
+from diagnostics import Issue, ConversionNotice
 import copy
 import math
 import itertools
@@ -203,9 +206,17 @@ _WORD = re.compile(r"[A-Za-z0-9]+(?:[.'\-][A-Za-z0-9]+)*")
 
 
 def _clean_md(s: str) -> str:
-    s = s.replace("**", "").replace("__", "").replace("`", "")
-    s = re.sub(r"^\s*>\s?", "", s)
-    return s
+    def plain(value):
+        value = re.sub(r'~~(.+?)~~', r'[删除：\1]', value)
+        value = re.sub(r'(?<!!)\[([^\]]+)\]\(([^)]+)\)', r'\1（\2）', value)
+        value = value.replace('**','').replace('__','').replace('`','')
+        value = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', r'\1', value)
+        return re.sub(r'^\s*>\s?', '引用：', value)
+    parts=[]; pos=0
+    for match in _INLINE_MATH.finditer(s):
+        parts.extend((plain(s[pos:match.start()]), match[0]));pos=match.end()
+    parts.append(plain(s[pos:]))
+    return ''.join(parts)
 
 
 def _emit_text(s, blocks, style="text", lvl=0):
@@ -234,7 +245,7 @@ def _emit_text(s, blocks, style="text", lvl=0):
             blocks.append((style, val))
 
 
-def markdown_to_blocks(md: str):
+def markdown_to_blocks(md: str, include_locations=False):
     """Keep tables and fenced diagrams rather than silently discarding them."""
     from structured_content import split_table_row, table_separator
     blocks, buf, lines = [], [], md.splitlines()
@@ -245,10 +256,23 @@ def markdown_to_blocks(md: str):
             buf.clear()
 
     index = 0
+    section = "文档开头"
+    heading_stack = []
     in_display = False
     while index < len(lines):
         raw = lines[index]
         st = raw.strip()
+        structural = (st.startswith(('#', '```', '~~~', '|', '!', '>', '-', '*', '+', '<')) or
+                      re.match(r'^\d+[.)]\s', st) or re.search(r'\$|\*|~~|`|\[[^\]]*\]\(', st))
+        if include_locations and not in_display and (not buf or not st or structural):
+            flush()
+            heading = re.match(r'^#{1,6}\s+(.+)', st)
+            if heading:
+                level = len(st.split()[0])
+                heading_stack = heading_stack[:level-1]
+                heading_stack.append(heading[1])
+                section = ' / '.join(heading_stack)
+            blocks.append(('source', dict(line=index+1, section=section)))
         fence = re.match(r'^(`{3,}|~{3,})([^\s]*)\s*$', st)
         if fence and not in_display:
             flush()
@@ -257,7 +281,11 @@ def markdown_to_blocks(md: str):
             index += 1
             while index < len(lines) and not re.fullmatch(re.escape(marker[0]) + '{' + str(len(marker)) + r',}\s*', lines[index].strip()):
                 content.append(lines[index]); index += 1
-            blocks.append(('diagram', '\n'.join(content), language or 'text'))
+            if index >= len(lines):
+                blocks.append(('diagnostic', '错误', '代码围栏', '围栏未闭合，已保留其中内容'))
+            if language not in {'', 'text', 'diagram', 'ascii', 'polezero', 'constellation', 'plot'}:
+                blocks.append(('diagnostic', '替代', '代码块', f'不支持 {language} 语法，保留等列源文字，不执行代码'))
+            blocks.append(('plot' if language == 'plot' else 'diagram', '\n'.join(content), language or 'text'))
             index += 1
             continue
         if not in_display and index + 1 < len(lines) and '|' in st and table_separator(lines[index + 1]):
@@ -282,6 +310,19 @@ def markdown_to_blocks(md: str):
             continue
         if not st:
             flush(); continue
+        image_match = re.fullmatch(r'!\[([^\]]*)\]\(([^)]+)\)', st)
+        if image_match:
+            flush(); blocks.append(('image', image_match[2], image_match[1])); continue
+        if '![' in st:
+            flush(); blocks.append(('diagnostic', '替代', '内联图片', '仅支持单独占一行的图片语法，此处保留源文字'))
+        if '<' in st and re.search(r'<[A-Za-z][^>]*>', st):
+            flush(); blocks.append(('diagnostic', '替代', 'HTML', '不支持 HTML 布局，保留源文字，不执行其中内容'))
+        if re.search(r'(?<!\\)\$(?!\$)', st) and len(re.findall(r'(?<!\\)\$', st)) % 2:
+            flush(); blocks.append(('diagnostic', '错误', '公式分隔符', '美元符号未成对，已保留原文'))
+        if re.search(r'\*\*|__|~~|`|(?<!\*)\*[^*]+\*(?!\*)', st) and not st.startswith('<!--mojian:'):
+            flush(); blocks.append(('diagnostic', '替代', '文本样式', '强调/行内代码采用普通字迹，删除线采用删除标记，未保留字体样式'))
+        if re.search(r'(?<!!)\[[^\]]+\]\([^)]+\)', st):
+            flush(); blocks.append(('diagnostic', '替代', '链接', '保留链接文字和地址；图片型 PDF 不含可点击链接'))
         if re.fullmatch(r"[-*_]{3,}", st):
             flush(); blocks.append(("rule",)); continue
         match = re.match(r"^(#{1,6})\s*(.+)$", st)
@@ -291,12 +332,19 @@ def markdown_to_blocks(md: str):
             continue
         match = re.match(r"^[-*+]\s+(.+)$", st)
         if match:
-            flush(); _emit_text(_clean_md(match.group(1)), blocks, style='bullet'); continue
+            flush()
+            level = min(8, (len(raw)-len(raw.lstrip()))//2)
+            label = match.group(1)
+            label = re.sub(r'^\[x\]\s*', '☑ ', label, flags=re.I)
+            label = re.sub(r'^\[ \]\s*', '☐ ', label)
+            blocks.append(('list', level, _clean_md(label))); continue
         match = re.match(r"^(\d+[.)])\s+(.+)$", st)
         if match:
             flush(); _emit_text(f'{match[1]} {_clean_md(match[2])}', blocks, style='bullet'); continue
         buf.append(_clean_md(st))
     flush()
+    if in_display:
+        blocks.append(('diagnostic', '错误', '块级公式', '块级公式分隔符未闭合，已保留原文'))
     return blocks
 
 
@@ -332,7 +380,9 @@ class Renderer:
 
     def __init__(self, font_size, dpi, ruled, line_spacing_ratio, word_spacing,
                  body_font, formula_font, seed, jitter=1.0, glyph_variation=1.0,
-                 page_limit=0, cancel=None, page_progress=None, page_sink=None):
+                 page_limit=0, cancel=None, page_progress=None, page_sink=None,
+                 source_path=None, issue_sink=None, formula_variation=0,
+                 table_variation=0, diagram_variation=0):
         self.size = font_size
         self.dpi = dpi
         self.ruled = ruled
@@ -344,9 +394,22 @@ class Renderer:
         self.glyph_variation = max(0.0, float(glyph_variation))
         self.shape_rand = random.Random(f"glyph:{seed}")
         self.page_limit = page_limit
+        self.limit_reached = False
         self.cancel = cancel
         self.page_progress = page_progress
         self.location = '正文'
+        self.word_location = ''
+        self.source_path = str(source_path or '<文本>')
+        self.source_line = 1
+        self.section = '文档开头'
+        self.issues = []
+        self.issue_sink = issue_sink
+        self.block_map = []
+        self.occupied = {}
+        self.formula_variation = max(0, min(1.8, float(formula_variation)))
+        self.table_variation = max(0, min(1.8, float(table_variation)))
+        self.diagram_variation = max(0, min(1.8, float(diagram_variation)))
+        self._coverage_cache = None
         self.page_sink = page_sink
         self.page_count = 0
         self._flushed_page = 0
@@ -419,6 +482,12 @@ class Renderer:
         (x, y) 为该字基线左端坐标。
         """
         self.check_cancel()
+        if self._coverage_cache is None:
+            self._coverage_cache = _coverage(self.body)
+            self._missing_glyphs = set()
+        if not ch.isspace() and ord(ch) not in self._coverage_cache and ch not in self._missing_glyphs:
+            self._missing_glyphs.add(ch)
+            self.issue('警告', '缺字', f'字体缺少字符 {ch!r} (U+{ord(ch):04X})，可能显示方框；请选择其他字体')
         j = self.jitter
         if j > 0:
             self._writing_slant = 0.88 * self._writing_slant + self.rand.uniform(-0.35, 0.35)
@@ -442,7 +511,18 @@ class Renderer:
             if abs(ang) > 0.15:
                 # expand=False: 绕中心旋转, 基线位置基本不变
                 tile = tile.rotate(ang, resample=Image.BICUBIC)
-        self.page.paste(tile, (int(x - pad), int(y - (pad + asc))), tile)
+        tx, ty = int(x-pad), int(y-(pad+asc))
+        bounds = tile.getbbox()
+        if bounds:
+            l,t,r,b = bounds
+            dx = max(0,self.left-(tx+l))-max(0,tx+r-(self.w-self.right))
+            dy = max(0,self.top-(ty+t))-max(0,ty+b-(self.h-self.bottom))
+            if dx or dy:
+                tx += dx; ty += dy
+                if not getattr(self, '_edge_adjusted', False):
+                    self.issue('警告','文字边界','已将超出安全边界的笔画移回页内；请检查边缘字距')
+                    self._edge_adjusted = True
+        self.page.paste(tile, (tx,ty), tile)
 
     def _new_page(self):
         self.check_cancel()
@@ -471,6 +551,19 @@ class Renderer:
         if self.y + need > self.h - self.bottom:
             self._new_page()
 
+    def record_region(self, kind, box):
+        """Check actual planned content boxes; ignore the ruled-paper background."""
+        left, top, right, bottom = box
+        regions = self.occupied.setdefault(self.page_count, [])
+        if left < self.left-1 or right > self.w-self.right+1 or top < self.top-1 or bottom > self.h-self.bottom+1:
+            self.issue('警告', kind, '内容边界超出版心，请检查裁切或减小字号')
+        for previous in regions:
+            l,t,r,b = previous
+            if min(right,r)-max(left,l)>2 and min(bottom,b)-max(top,t)>2:
+                self.issue('警告', kind, '检测到内容区域重叠，请检查本页或增加行距')
+                break
+        regions.append(box)
+
     def check_cancel(self):
         if self.cancel is not None and self.cancel():
             raise ConversionCancelled('已取消转换')
@@ -483,7 +576,33 @@ class Renderer:
             result = fml.render_formula(latex, self.ffont, self.size, self.dpi, COLOR)
         for notice in notices:
             warnings.warn(f'{self.location}，公式「{latex[:100]}」：{notice.message}', UserWarning)
+        if self.formula_variation:
+            result = fml.Formula(self._deform_component(result.image, self.formula_variation), result.depth, result.source)
         return result
+
+    def _deform_component(self, image, amount):
+        previous = self.glyph_variation
+        self.glyph_variation = amount
+        try:
+            return self._deform_char(image, self.size)
+        finally:
+            self.glyph_variation = previous
+
+    @contextmanager
+    def component_style(self, amount):
+        previous = self.jitter, self.glyph_variation
+        self.jitter, self.glyph_variation = 0, amount
+        try:
+            yield
+        finally:
+            self.jitter, self.glyph_variation = previous
+
+    def issue(self, severity, obj, reason):
+        item = Issue(severity, self.source_path, self.source_line, self.section, obj, str(reason), self.page_count)
+        if not any(i.to_dict() == item.to_dict() for i in self.issues):
+            self.issues.append(item)
+            warnings.warn(ConversionNotice(item), stacklevel=2)
+        return item
 
     def _inline_items(self, text):
         pos = 0
@@ -525,6 +644,7 @@ class Renderer:
             height = above+below
             self._ensure(height)
             baseline = self.y+above
+            self.record_region('文字/行内公式', (self.left+indent,self.y,self.left+indent+min(used,available),self.y+height))
             for kind, value, offset in parts:
                 x = self.left+indent+offset
                 if kind == 'math':
@@ -533,7 +653,7 @@ class Renderer:
                     for char in value:
                         self._draw_char(char, x+self._gauss(size*.03*self.jitter),
                                         baseline+self._gauss(size*.03*self.jitter), size)
-                        x += max(1, self._adv(char, size)+self.word_spacing+self._gauss(size*.02*self.jitter))
+                        x += max(1, self._adv(char, size)+self.word_spacing)
             self.y += max(self.line_spacing, height+round(size*.12))
             parts, used, above, below = [], 0.0, ascent, descent
 
@@ -543,6 +663,7 @@ class Renderer:
                 scale = min(1, available/max(1, value.width),
                             (self.h-self.top-self.bottom)*.9/max(1, value.height))
                 if scale < 1:
+                    self.issue('警告', '行内公式', f'超出可用版面，已等比缩放至 {scale:.0%}；过小时请拆分')
                     value = fml.Formula(value.image.resize((max(1, round(value.width*scale)), max(1, round(value.height*scale))), Image.Resampling.LANCZOS),
                                         round(value.depth*scale), value.source)
                 if used and used+value.width > available:
@@ -569,8 +690,10 @@ class Renderer:
             self._draw_flow([("text", latex)], self.size)
             return
         maxw = self.w - self.left - self.right
-        if fi.width > maxw:                          # 过宽则等比缩小
-            s = maxw / fi.width
+        maximum_height = self.h-self.top-self.bottom-self.line_spacing
+        s = min(1, maxw/max(1,fi.width), maximum_height/max(1,fi.height))
+        if s < 1:
+            self.issue('警告', '独立公式', f'超出可用版面，已等比缩放至 {s:.0%}；请检查可读性或拆成多行')
             fi = fml.Formula(
                 fi.image.resize((max(1, int(fi.width * s)),
                                  max(1, int(fi.height * s)))),
@@ -580,6 +703,7 @@ class Renderer:
         top_y = self.y+gap
         cx = self.left + max(0, (maxw - fi.width) // 2)
         self.page.paste(fi.image, (int(cx), int(top_y)), fi.image)
+        self.record_region('独立公式', (cx,top_y,cx+fi.width,top_y+fi.height))
         self.y = top_y + fi.height + gap
 
     def _draw_rule(self):
@@ -591,13 +715,92 @@ class Renderer:
 
     # -- 入口 ---------------------------------------------------------------
     def draw_block(self, block, formula=True):
+        if block[0] == 'source':
+            self.source_line, self.section = block[1]['line'], block[1]['section']
+            if self.word_location:
+                self.section = self.word_location+' / '+self.section
+            self.location = f'{self.word_location} / 第 {self.source_line} 行 / {self.section}'
+            return
+        start_page = self.page_count
+        first_y = self.y
+        issue_start = len(self.issues)
+        with warnings.catch_warnings(record=True) as notes:
+            warnings.simplefilter('always', UserWarning)
+            try:
+                self._draw_block(block, formula)
+            except _PageLimitReached:
+                raise
+            finally:
+                for note in notes:
+                    if not isinstance(note.message, ConversionNotice):
+                        self.issue('错误' if '失败' in str(note.message) else '警告', block[0], str(note.message))
+        atomic = block[0] in {'heading','formula','diagram','image','plot'}
+        actual_page = self.page_count if atomic else start_page
+        if actual_page != start_page:
+            for item in self.issues[issue_start:]:
+                item.page = actual_page
+        if block[0] in {'diagram','plot','image'} and actual_page > start_page:
+            previous = self.block_map[-1] if self.block_map else None
+            if previous and previous['kind']=='text' and previous['end_page']==start_page:
+                self.issue('警告','图与说明分页','图形已移至下一页，前面的说明文字可能与图分离；建议缩短说明或拆分高图')
+        # Re-emit structured warnings outside catch_warnings; consumers retain metadata.
+        for note in notes:
+            if isinstance(note.message, ConversionNotice):
+                warnings.warn(note.message)
+        if block[0] not in {'location','diagnostic'}:
+            self.block_map.append(dict(line=self.source_line,section=self.section,kind=block[0],
+                                       page=actual_page,end_page=self.page_count,y=self.top if actual_page!=start_page else first_y,bottom=self.y))
+        if self.y > self.h-self.bottom:
+            self.issue('警告', block[0], '内容超过页底安全区，请检查此页')
+
+    def _draw_block(self, block, formula=True):
         self.check_cancel()
         kind = block[0]
-        if kind == 'location':
+        if kind == 'diagnostic':
+            self.issue(block[1], block[2], block[3])
+        elif kind == 'location':
             self.location = block[1]
+            self.word_location = block[1]
         elif kind == 'table':
             from table_render import draw_table
-            draw_table(self, block[1])
+            with self.component_style(self.table_variation):
+                draw_table(self, block[1])
+        elif kind in {'image', 'plot'}:
+            width = self.w-self.left-self.right
+            maximum_height = self.h-self.top-self.bottom-3*self.line_spacing
+            try:
+                if kind == 'plot':
+                    from precise_plot import plot_image
+                    image = plot_image(block[1], self.body, self.size, width, cancel_check=self.check_cancel)
+                else:
+                    from urllib.parse import unquote, urlsplit
+                    target = block[1].strip()
+                    if urlsplit(target).scheme and not re.match(r'^[A-Za-z]:[\\/]', target):
+                        raise ValueError('只支持本地图片，不下载网络资源')
+                    target = Path(unquote(target))
+                    if not target.is_absolute():
+                        target = Path(self.source_path).resolve().parent/target
+                    with Image.open(target) as original:
+                        original.load()
+                        image = original.convert('RGBA')
+                scale = min(1,width/image.width,maximum_height/image.height)
+                if scale<1:
+                    self.issue('警告', kind, f'图片/坐标图已等比缩放至 {scale:.0%}，完整保留边界')
+                    image = image.resize((max(1,round(image.width*scale)),max(1,round(image.height*scale))),Image.Resampling.LANCZOS)
+                if kind == 'plot' and self.diagram_variation:
+                    image = self._deform_component(image,self.diagram_variation)
+                caption = block[2] if kind == 'image' else ''
+                caption_lines = max(1,math.ceil(self._adv(caption,self.size)/width)) if caption else 0
+                self._ensure(image.height+caption_lines*self.line_spacing+self.line_spacing*.4)
+                image_x=round(self.left+(width-image.width)/2)
+                self.record_region(kind,(image_x,self.y,image_x+image.width,self.y+image.height))
+                self.page.paste(image,(image_x,round(self.y)),image)
+                self.y += image.height+self.line_spacing*.2
+                if caption:
+                    with self.component_style(0): self._draw_flow([('text',caption)],self.size)
+            except (OSError, ValueError, KeyError, TypeError, OverflowError) as exc:
+                self.issue('错误', kind, f'{exc}；已采用错误占位，未生成假图')
+                self._draw_flow([('text', f'[无法显示{kind}：{block[2] if kind=="image" else "坐标描述错误"}]')],self.size)
         elif kind == 'diagram':
             from structured_content import diagram_image
             width = self.w-self.left-self.right
@@ -608,7 +811,11 @@ class Renderer:
                 factor = maximum_height/image.height
                 image = image.resize((max(1, round(image.width*factor)), maximum_height), Image.Resampling.LANCZOS)
                 warnings.warn(f'{self.location}：较大的字符示意图已整体缩小，请检查标签可读性。', UserWarning)
+            if self.diagram_variation:
+                image = self._deform_component(image,self.diagram_variation)
             self._ensure(image.height+self.line_spacing*.4)
+            image_x=round(self.left+(width-image.width)/2)
+            self.record_region('字符图',(image_x,self.y,image_x+image.width,self.y+image.height))
             self.page.paste(image, (round(self.left+(width-image.width)/2), round(self.y)), image)
             self.y += image.height+self.line_spacing*.4
         elif kind == "formula":
@@ -617,11 +824,16 @@ class Renderer:
             else:
                 self._draw_flow([("text", block[1])], self.size)
         elif kind == "heading":
+            # Reserve heading plus at least two normal lines for following content.
+            self._ensure(self.line_spacing*4)
             lvl, txt = block[1], block[2]
             txt = "【 " + txt + " 】" if lvl == 1 else \
                   ("◆ " + txt if lvl == 2 else "· " + txt)
             size = int(self.size * 1.12)
             self._draw_flow(self._inline_items(txt), size)
+        elif kind == 'list':
+            self._draw_flow(itertools.chain([('text','· ')],self._inline_items(block[2])),
+                            self.size,indent=round(self.size*(.7+block[1]*.9)))
         elif kind == "bullet":
             self._draw_flow(itertools.chain([("text", "· ")], self._inline_items(block[1])),
                             self.size, indent=int(self.size * 0.7))
@@ -634,7 +846,9 @@ class Renderer:
 def render_markdown(md, *, font=None, font_size=40, dpi=150, seed=20231029,
                     ruled=True, line_spacing_ratio=1.4, word_spacing=0.0,
                     formula=True, formula_font=None, jitter=1.0, glyph_variation=1.0,
-                    page_limit=0, cancel=None, page_progress=None, page_sink=None):
+                    page_limit=0, cancel=None, page_progress=None, page_sink=None,
+                    source_path=None, issue_sink=None, formula_variation=0,
+                    table_variation=0, diagram_variation=0):
     """把 markdown 文本渲染成若干页 PIL.Image, 返回 (pages, renderer)。"""
     body = pick_font(font)
     ffont = formula_font or FALLBACK
@@ -643,14 +857,21 @@ def render_markdown(md, *, font=None, font_size=40, dpi=150, seed=20231029,
     r = Renderer(font_size, dpi, ruled, line_spacing_ratio, word_spacing,
                  body, ffont, seed, jitter=jitter, glyph_variation=glyph_variation,
                  page_limit=page_limit, cancel=cancel, page_progress=page_progress,
-                 page_sink=page_sink)
+                 page_sink=page_sink, source_path=source_path, issue_sink=issue_sink,
+                 formula_variation=formula_variation, table_variation=table_variation,
+                 diagram_variation=diagram_variation)
+    if word_spacing < 0:
+        r.issue('警告', '负字距', '负字距可能使相邻笔画重叠；表格独立保持字距，正文请检查可读性')
     try:
-        for blk in markdown_to_blocks(md):
+        for blk in markdown_to_blocks(md, include_locations=True):
             r.draw_block(blk, formula=formula)
     except _PageLimitReached:
-        pass
+        r.limit_reached = True
     r.check_cancel()
     r.finish_page()
+    if issue_sink:
+        for item in r.issues:
+            issue_sink(item.to_dict())
     return r.pages, r
 
 
@@ -658,7 +879,8 @@ def convert_text(text, outdir, stem, *, font=None, font_size=40, dpi=150,
                  seed=20231029, ruled=True, line_spacing_ratio=1.4,
                  word_spacing=0.0, formula=True, formula_font=None,
                  jitter=1.0, glyph_variation=1.0, page=0, max_pages=0, progress=None,
-                 cancel=None, page_progress=None):
+                 cancel=None, page_progress=None, source_path=None, issue_sink=None,
+                 formula_variation=0, table_variation=0, diagram_variation=0):
     """把 (markdown) 文本渲染成手写体 PNG, 返回输出文件路径列表。"""
     os.makedirs(outdir, exist_ok=True)
     out_paths = []
@@ -676,7 +898,9 @@ def convert_text(text, outdir, stem, *, font=None, font_size=40, dpi=150,
         line_spacing_ratio=line_spacing_ratio, word_spacing=word_spacing,
         formula=formula, formula_font=formula_font, jitter=jitter,
         glyph_variation=glyph_variation, page_limit=page or max_pages,
-        cancel=cancel, page_progress=page_progress, page_sink=save_page)
+        cancel=cancel, page_progress=page_progress, page_sink=save_page,
+        source_path=source_path, issue_sink=issue_sink, formula_variation=formula_variation,
+        table_variation=table_variation, diagram_variation=diagram_variation)
     return out_paths
 
 
@@ -702,7 +926,8 @@ def convert_file(input_path, outdir=None, *, font=None, font_size=40, dpi=150,
                  seed=20231029, ruled=True, line_spacing_ratio=1.4,
                  word_spacing=0.0, formula=True, formula_font=None,
                  jitter=1.0, glyph_variation=1.0, page=0, max_pages=0, progress=None,
-                 cancel=None, page_progress=None):
+                 cancel=None, page_progress=None, issue_sink=None,
+                 formula_variation=0, table_variation=0, diagram_variation=0):
     """把 DOCX 或 UTF-8 文本转成手写体 PNG，返回输出路径列表。"""
     md = read_input(input_path, cancel=cancel)
     stem = os.path.splitext(os.path.basename(input_path))[0]
@@ -715,7 +940,9 @@ def convert_file(input_path, outdir=None, *, font=None, font_size=40, dpi=150,
                         formula_font=formula_font, jitter=jitter,
                         glyph_variation=glyph_variation, page=page,
                         max_pages=max_pages, progress=progress, cancel=cancel,
-                        page_progress=page_progress)
+                        page_progress=page_progress, source_path=input_path, issue_sink=issue_sink,
+                        formula_variation=formula_variation, table_variation=table_variation,
+                        diagram_variation=diagram_variation)
 
 
 def main():
@@ -737,6 +964,9 @@ def main():
                     help="位置/旋转随机度，含字号与字距抖动(0=整齐, 默认 1)")
     ap.add_argument("--glyph-variation", type=float, default=1.0,
                     help="独立的字形变化强度(0=关闭, 默认 1, 1.8 起达到上限)")
+    ap.add_argument('--formula-variation', type=float, default=0, help='公式字迹变化，默认0保持规整')
+    ap.add_argument('--table-variation', type=float, default=0, help='表格文字变化，默认0')
+    ap.add_argument('--diagram-variation', type=float, default=0, help='图形变化，精确图建议0')
     ap.add_argument("--max-pages", type=int, default=0, help="最多输出几页(0=全部)")
     ap.add_argument("--page", type=int, default=0, help="只输出第几页(0=全部)")
     ap.add_argument('--pdf', action='store_true', help='只导出一个 PDF 文件，不保留 PNG 或结果文件夹')
@@ -757,6 +987,7 @@ def main():
         formula=not args.no_formula,
         line_spacing_ratio=args.line_spacing, word_spacing=args.word_spacing,
         jitter=args.jitter, glyph_variation=args.glyph_variation,
+        formula_variation=args.formula_variation, table_variation=args.table_variation, diagram_variation=args.diagram_variation,
         page=args.page, max_pages=args.max_pages, export_format='pdf' if args.pdf else 'png')
     print(f"完成: 共 {getattr(paths, 'page_count', len(paths))} 页, 输出到 {paths[0] if args.pdf and paths else outdir}")
 
