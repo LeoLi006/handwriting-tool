@@ -4,7 +4,7 @@ $candidates = @((Join-Path $PSScriptRoot '.venv\Scripts\pythonw.exe'),
 foreach ($name in @('pythonw.exe', 'python.exe', 'python3.exe', 'pyw.exe', 'py.exe')) {
     $candidates += @(Get-Command $name -All -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)
 }
-$candidates += @("$env:USERPROFILE\anaconda3\python.exe", 'D:\Users\lwz\anaconda3\python.exe')
+$candidates += @("$env:USERPROFILE\anaconda3\python.exe")
 $launcher = Join-Path $PSScriptRoot 'gui_launcher.py'
 foreach ($candidate in ($candidates | Select-Object -Unique)) {
     if ($candidate -match 'WindowsApps' -or -not (Test-Path -LiteralPath $candidate)) { continue }

@@ -1,0 +1,94 @@
+{
+  "python": {
+    "version": "3.13.17",
+    "url": "https://www.python.org/ftp/python/3.13.17/python-3.13.17-amd64.zip",
+    "sha256": "b26ca4b4ee51e157836049934d2b8eabd55939be296f3130254251b6df96ec2f"
+  },
+  "platform": "windows-x86_64",
+  "wheels": [
+    {
+      "name": "pillow",
+      "version": "11.3.0",
+      "filename": "pillow-11.3.0-cp313-cp313-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/23/85/397c73524e0cd212067e0c969aa245b01d50183439550d24d9f55781b776/pillow-11.3.0-cp313-cp313-win_amd64.whl",
+      "sha256": "0bce5c4fd0921f99d2e858dc4d4d64193407e1b99478bc5cacecba2311abde51"
+    },
+    {
+      "name": "fonttools",
+      "version": "4.60.1",
+      "filename": "fonttools-4.60.1-cp313-cp313-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/75/4d/b022c1577807ce8b31ffe055306ec13a866f2337ecee96e75b24b9b753ea/fonttools-4.60.1-cp313-cp313-win_amd64.whl",
+      "sha256": "a3db56f153bd4c5c2b619ab02c5db5192e222150ce5a1bc10f16164714bc39ac"
+    },
+    {
+      "name": "matplotlib",
+      "version": "3.10.6",
+      "filename": "matplotlib-3.10.6-cp313-cp313-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/ff/1d/70c28528794f6410ee2856cd729fa1f1756498b8d3126443b0a94e1a8695/matplotlib-3.10.6-cp313-cp313-win_amd64.whl",
+      "sha256": "1b53bd6337eba483e2e7d29c5ab10eee644bc3a2491ec67cc55f7b44583ffb18"
+    },
+    {
+      "name": "tkinterdnd2",
+      "version": "0.4.3",
+      "filename": "tkinterdnd2-0.4.3-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/08/c3/e04f004a53c00dc01126b6f998264cef672c6883c36aa4bd65845a8eb4c0/tkinterdnd2-0.4.3-py3-none-any.whl",
+      "sha256": "8804f5d2e2a99713ec93e85384397fec6bf66fdf2065e3750938d55018971c4a"
+    },
+    {
+      "name": "numpy",
+      "version": "2.3.3",
+      "filename": "numpy-2.3.3-cp313-cp313-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/1b/b5/263ebbbbcede85028f30047eab3d58028d7ebe389d6493fc95ae66c636ab/numpy-2.3.3-cp313-cp313-win_amd64.whl",
+      "sha256": "f0dadeb302887f07431910f67a14d57209ed91130be0adea2f9793f1a4f817cf"
+    },
+    {
+      "name": "contourpy",
+      "version": "1.3.3",
+      "filename": "contourpy-1.3.3-cp313-cp313-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/18/0b/0098c214843213759692cc638fce7de5c289200a830e5035d1791d7a2338/contourpy-1.3.3-cp313-cp313-win_amd64.whl",
+      "sha256": "1cadd8b8969f060ba45ed7c1b714fe69185812ab43bd6b86a9123fe8f99c3263"
+    },
+    {
+      "name": "cycler",
+      "version": "0.12.1",
+      "filename": "cycler-0.12.1-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/e7/05/c19819d5e3d95294a6f5947fb9b9629efb316b96de511b418c53d245aae6/cycler-0.12.1-py3-none-any.whl",
+      "sha256": "85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30"
+    },
+    {
+      "name": "kiwisolver",
+      "version": "1.4.9",
+      "filename": "kiwisolver-1.4.9-cp313-cp313-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/75/bd/f1a5d894000941739f2ae1b65a32892349423ad49c2e6d0771d0bad3fae4/kiwisolver-1.4.9-cp313-cp313-win_amd64.whl",
+      "sha256": "dd0a578400839256df88c16abddf9ba14813ec5f21362e1fe65022e00c883d4d"
+    },
+    {
+      "name": "packaging",
+      "version": "25.0",
+      "filename": "packaging-25.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/20/12/38679034af332785aac8774540895e234f4d07f7545804097de4b666afd8/packaging-25.0-py3-none-any.whl",
+      "sha256": "29572ef2b1f17581046b3a2227d5c611fb25ec70ca1ba8554b24b0e69331a484"
+    },
+    {
+      "name": "pyparsing",
+      "version": "3.2.5",
+      "filename": "pyparsing-3.2.5-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/10/5e/1aa9a93198c6b64513c9d7752de7422c06402de6600a8767da1524f9570b/pyparsing-3.2.5-py3-none-any.whl",
+      "sha256": "e38a4f02064cf41fe6593d328d0512495ad1f3d8a91c4f73fc401b3079a59a5e"
+    },
+    {
+      "name": "python-dateutil",
+      "version": "2.9.0.post0",
+      "filename": "python_dateutil-2.9.0.post0-py2.py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/ec/57/56b9bcc3c9c6a792fcbaf139543cee77261f3651ca9da0c93f5c1221264b/python_dateutil-2.9.0.post0-py2.py3-none-any.whl",
+      "sha256": "a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427"
+    },
+    {
+      "name": "six",
+      "version": "1.17.0",
+      "filename": "six-1.17.0-py2.py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl",
+      "sha256": "4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274"
+    }
+  ]
+}

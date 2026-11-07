@@ -16,6 +16,8 @@ Markdown(.md) -> 手写体图片 转换引擎（混合排版）
 """
 
 import argparse
+import threading
+import functools
 from pathlib import Path
 from contextlib import contextmanager
 from diagnostics import Issue, ConversionNotice
@@ -156,9 +158,11 @@ def resolve_font(name_or_path: str) -> str:
         return path
 
     from font_manager import cache_directory
+    import hashlib
     cache_directory().mkdir(parents=True, exist_ok=True)
+    digest=hashlib.sha256(Path(path).read_bytes()+Path(FALLBACK).read_bytes()).hexdigest()[:12] if os.path.exists(FALLBACK) else 'no-fallback'
     cache = os.path.join(cache_directory(), "_merged_" +
-                         os.path.splitext(os.path.basename(path))[0] + ".ttf")
+                         os.path.splitext(os.path.basename(path))[0] + '--'+digest+".ttf")
     if os.path.exists(cache) and _coverage(cache) >= _NEED:
         return cache
     if os.path.exists(FALLBACK) and _has_glyf(path) and _has_glyf(FALLBACK):
@@ -248,7 +252,12 @@ def _emit_text(s, blocks, style="text", lvl=0):
 def markdown_to_blocks(md: str, include_locations=False):
     """Keep tables and fenced diagrams rather than silently discarding them."""
     from structured_content import split_table_row, table_separator
-    blocks, buf, lines = [], [], md.splitlines()
+    blocks, buf = [], []
+    for match in re.finditer(r'[\x00-\x08\x0b\x0c\x0e-\x1f]',md):
+        if include_locations:blocks.append(('source',dict(line=md[:match.start()].count('\n')+1,section='输入诊断')))
+        blocks.append(('diagnostic','错误','控制字符',f'发现 U+{ord(match[0]):04X} 控制字符，已替换为可见标记；请检查公式反斜线是否损坏'))
+    md=re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]',lambda m:f'[U+{ord(m[0]):04X}]',md)
+    lines=md.splitlines()
 
     def flush():
         if buf:
@@ -273,6 +282,14 @@ def markdown_to_blocks(md: str, include_locations=False):
                 heading_stack.append(heading[1])
                 section = ' / '.join(heading_stack)
             blocks.append(('source', dict(line=index+1, section=section)))
+        directive=re.fullmatch(r'<!--\s*(pagebreak|keep-next|keep-start|keep-end|caption\s*:\s*(.+?))\s*-->',st)
+        if directive and not in_display:
+            flush()
+            name=directive[1]
+            if name.startswith('caption'):
+                blocks.append(('caption',directive[2]))
+            else: blocks.append(({'pagebreak':'pagebreak','keep-next':'keepnext','keep-start':'keepstart','keep-end':'keepend'}[name],))
+            index+=1;continue
         fence = re.match(r'^(`{3,}|~{3,})([^\s]*)\s*$', st)
         if fence and not in_display:
             flush()
@@ -345,7 +362,8 @@ def markdown_to_blocks(md: str, include_locations=False):
     flush()
     if in_display:
         blocks.append(('diagnostic', '错误', '块级公式', '块级公式分隔符未闭合，已保留原文'))
-    return blocks
+    from page_groups import structure_blocks
+    return structure_blocks(blocks)
 
 
 # ----------------------------------------------------------------------------
@@ -377,6 +395,7 @@ class ConversionCancelled(Exception):
 
 class Renderer:
     """混合排版器: 正文逐字手写 + 公式二维贴图, 自动换行/分页。"""
+    PageLimitReached = _PageLimitReached
 
     def __init__(self, font_size, dpi, ruled, line_spacing_ratio, word_spacing,
                  body_font, formula_font, seed, jitter=1.0, glyph_variation=1.0,
@@ -405,6 +424,7 @@ class Renderer:
         self.issues = []
         self.issue_sink = issue_sink
         self.block_map = []
+        self._pending_break = False
         self.occupied = {}
         self.formula_variation = max(0, min(1.8, float(formula_variation)))
         self.table_variation = max(0, min(1.8, float(table_variation)))
@@ -598,7 +618,7 @@ class Renderer:
             self.jitter, self.glyph_variation = previous
 
     def issue(self, severity, obj, reason):
-        item = Issue(severity, self.source_path, self.source_line, self.section, obj, str(reason), self.page_count)
+        item = Issue(severity, Path(self.source_path).name, self.source_line, self.section, obj, str(reason), self.page_count)
         if not any(i.to_dict() == item.to_dict() for i in self.issues):
             self.issues.append(item)
             warnings.warn(ConversionNotice(item), stacklevel=2)
@@ -613,7 +633,7 @@ class Renderer:
             try:
                 yield "math", self._render_formula(latex)
             except Exception as exc:
-                warnings.warn(f'{self.location}，行内公式「{latex[:100]}」二维渲染失败，已保留文字：{exc}', UserWarning)
+                self.issue('错误','行内公式',f'{self.location}，行内公式「{latex[:100]}」二维渲染失败，已保留文字：{exc}')
                 yield "text", latex
             pos = m.end()
         if pos < len(text):
@@ -682,29 +702,48 @@ class Renderer:
                         parts.append(('text', word, used)); used += width
         flush()
 
-    def _draw_display_formula(self, latex):
+    def _draw_display_formula(self, latex, allow_split=True):
         try:
             fi = self._render_formula(latex)
         except Exception as exc:
             warnings.warn(f'{self.location}，独立公式「{latex[:100]}」二维渲染失败，已保留文字：{exc}', UserWarning)
             self._draw_flow([("text", latex)], self.size)
-            return
+            return (self.page_count,self.page_count)
         maxw = self.w - self.left - self.right
         maximum_height = self.h-self.top-self.bottom-self.line_spacing
+        split_reason='不可分片段未再拆分' if not allow_split else '未超宽，无需分行'
+        if allow_split and fi.width>maxw:
+            from readable_layout import fit_math_lines
+            lines=[latex]
+            try:
+                lines, split_reason=fit_math_lines(latex,lambda value:fml.render_formula(value,self.ffont,self.size,self.dpi,COLOR).width,maxw)
+            except Exception:
+                split_reason='候选行无法独立渲染，已放弃分行'
+            if len(lines)>1:
+                note=self.issue('替代','公式分行',f'{split_reason}；已分为 {len(lines)} 行，未重排项')
+                first=None
+                for line in lines:
+                    span=self._draw_display_formula(line,allow_split=False)
+                    if first is None:first=span[0]
+                if note:note.page=first
+                return (first,self.page_count)
         s = min(1, maxw/max(1,fi.width), maximum_height/max(1,fi.height))
+        shrink_note=None
         if s < 1:
-            self.issue('警告', '独立公式', f'超出可用版面，已等比缩放至 {s:.0%}；请检查可读性或拆成多行')
+            shrink_note=self.issue('警告', '独立公式', f'超出可用版面，已等比缩放至 {s:.0%}；{split_reason}；请检查可读性')
             fi = fml.Formula(
                 fi.image.resize((max(1, int(fi.width * s)),
                                  max(1, int(fi.height * s)))),
                 int(fi.depth * s), fi.source)
         gap = max(6, int(self.line_spacing*.18))
         self._ensure(fi.height+2*gap)
+        if shrink_note:shrink_note.page=self.page_count
         top_y = self.y+gap
         cx = self.left + max(0, (maxw - fi.width) // 2)
         self.page.paste(fi.image, (int(cx), int(top_y)), fi.image)
         self.record_region('独立公式', (cx,top_y,cx+fi.width,top_y+fi.height))
         self.y = top_y + fi.height + gap
+        return (self.page_count,self.page_count)
 
     def _draw_rule(self):
         self._ensure(self.line_spacing)
@@ -721,9 +760,13 @@ class Renderer:
                 self.section = self.word_location+' / '+self.section
             self.location = f'{self.word_location} / 第 {self.source_line} 行 / {self.section}'
             return
+        if self._pending_break and block[0] not in {'pagebreak','location','diagnostic'}:
+            if self.y>self.top: self._new_page()
+            self._pending_break=False
         start_page = self.page_count
         first_y = self.y
         issue_start = len(self.issues)
+        self._last_formula_range=None
         with warnings.catch_warnings(record=True) as notes:
             warnings.simplefilter('always', UserWarning)
             try:
@@ -736,7 +779,9 @@ class Renderer:
                         self.issue('错误' if '失败' in str(note.message) else '警告', block[0], str(note.message))
         atomic = block[0] in {'heading','formula','diagram','image','plot'}
         actual_page = self.page_count if atomic else start_page
-        if actual_page != start_page:
+        if block[0]=='formula' and self._last_formula_range:
+            actual_page=self._last_formula_range[0]
+        if actual_page != start_page and block[0]!='formula':
             for item in self.issues[issue_start:]:
                 item.page = actual_page
         if block[0] in {'diagram','plot','image'} and actual_page > start_page:
@@ -756,7 +801,15 @@ class Renderer:
     def _draw_block(self, block, formula=True):
         self.check_cancel()
         kind = block[0]
-        if kind == 'diagnostic':
+        if kind=='pagebreak':
+            self._pending_break=True
+        elif kind=='keepgroup':
+            from page_groups import draw_group
+            draw_group(self,block[1],formula)
+        elif kind=='caption':
+            with self.component_style(0):
+                self._draw_flow(self._inline_items('图注：'+block[1]),self.size)
+        elif kind == 'diagnostic':
             self.issue(block[1], block[2], block[3])
         elif kind == 'location':
             self.location = block[1]
@@ -799,7 +852,8 @@ class Renderer:
                 if caption:
                     with self.component_style(0): self._draw_flow([('text',caption)],self.size)
             except (OSError, ValueError, KeyError, TypeError, OverflowError) as exc:
-                self.issue('错误', kind, f'{exc}；已采用错误占位，未生成假图')
+                reason=f'无法读取本地图片「{block[1]}」：{exc.strerror or type(exc).__name__}' if kind=='image' and isinstance(exc,OSError) else str(exc)
+                self.issue('错误', kind, f'{reason}；已采用错误占位，未生成假图')
                 self._draw_flow([('text', f'[无法显示{kind}：{block[2] if kind=="image" else "坐标描述错误"}]')],self.size)
         elif kind == 'diagram':
             from structured_content import diagram_image
@@ -820,7 +874,7 @@ class Renderer:
             self.y += image.height+self.line_spacing*.4
         elif kind == "formula":
             if formula:
-                self._draw_display_formula(block[1])
+                self._last_formula_range=self._draw_display_formula(block[1])
             else:
                 self._draw_flow([("text", block[1])], self.size)
         elif kind == "heading":
@@ -843,6 +897,18 @@ class Renderer:
             self._draw_flow(self._inline_items(block[1]), self.size)
 
 
+RENDER_LOCK=threading.RLock()
+
+
+def _serialized_render(function):
+    @functools.wraps(function)
+    def wrapped(*args,**kwargs):
+        with RENDER_LOCK:
+            return function(*args,**kwargs)
+    return wrapped
+
+
+@_serialized_render
 def render_markdown(md, *, font=None, font_size=40, dpi=150, seed=20231029,
                     ruled=True, line_spacing_ratio=1.4, word_spacing=0.0,
                     formula=True, formula_font=None, jitter=1.0, glyph_variation=1.0,

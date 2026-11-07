@@ -10,6 +10,7 @@ r"""
 """
 
 import os
+from pathlib import Path
 import queue
 import sys
 import threading
@@ -39,6 +40,7 @@ import handwriting as hw   # noqa: E402
 from app_settings import PRESETS, load_settings, save_settings
 from batch_tasks import run_batch
 import font_manager
+from document_settings import DocumentSettings
 from ui_scaling import ResponsiveFonts
 from preview_cache import PreviewCache, fingerprint
 
@@ -83,6 +85,10 @@ class App:
     def __init__(self, root, settings_file=None):
         self.root = root
         self.settings_file = settings_file
+        self.document_settings=DocumentSettings(Path(settings_file).parent/'documents.json' if settings_file else None)
+        self._active_document=None;self._document_sessions={};self._applying_profile=False
+        self._global_preferences={}
+
         self._save_id = None
         self._applying = False
         self._approved_snapshot = None
@@ -101,6 +107,7 @@ class App:
         self.output_paths = []
         self.preview_index = 0
         self.notices = []
+        self.compare_view = None
         self.q = queue.Queue()      # worker 线程 -> 主线程 的消息队列
 
         root.title("墨笺 · 手写体转换器")
@@ -197,6 +204,12 @@ class App:
                                values=['自定义', *PRESETS])
         presets.pack(fill='x', pady=(0, 10))
         presets.bind('<<ComboboxSelected>>', lambda e: self._apply_preset())
+        self.settings_source=ttk.Label(left,text='设置来源：全局默认',wraplength=280)
+        self.settings_source.pack(fill='x',pady=4)
+        profile_actions=tk.Frame(left,bg=CARD);profile_actions.pack(fill='x')
+        for title,command in [('保存文档',self._save_document_settings),('恢复',self._restore_document_settings),('重置',self._reset_document_settings)]:
+            ttk.Button(profile_actions,text=title,command=command).pack(side='left',expand=True,fill='x')
+        ttk.Button(left,text='当前参数设为全局默认',command=self._set_global_default).pack(fill='x',pady=5)
         section("字体与排版", "选择字迹，调整纸上的疏密")
         self.font_var = tk.StringVar()
         self.font_combo = ttk.Combobox(left, textvariable=self.font_var, state="readonly")
@@ -209,6 +222,7 @@ class App:
         caption("字距")
         self.word_var = tk.DoubleVar(value=0); self._slider(left, self.word_var, -10, 16, None)
         divider()
+        ttk.Button(left,text='打开调整前后对照',command=self._open_comparison).pack(fill='x',pady=6)
         section("手写变化", "整齐程度与字形变化，分别调整")
         caption("位置 / 旋转随机度")
         self.jitter_var = tk.DoubleVar(value=0.2); self._slider(left, self.jitter_var, 0, 2.5, None, 0.1)
@@ -276,6 +290,7 @@ class App:
         self.job_tree.configure(yscrollcommand=queue_scroll.set)
         self.job_tree.pack(side='left', fill='x', expand=True)
         self.job_tree.bind('<Double-1>', self._job_detail)
+        self.job_tree.bind('<<TreeviewSelect>>',self._select_document)
 
         preview_card = tk.Frame(right, bg=CARD, padx=16, pady=12)
         preview_card.pack(fill="both", expand=True, pady=(14, 0))
@@ -344,12 +359,94 @@ class App:
             if data.get(key) in self.style_keys:
                 combo.current(self.style_keys.index(data[key]))
         self.preset_var.set(data.get('preset', '自定义'))
+        self._global_preferences=self._settings_payload()
         for var in [*self._setting_variables().values(), self.font_var, self.formula_font_var]:
             var.trace_add('write', self._settings_changed)
 
+    def _settings_payload(self):
+        data={key:var.get() for key,var in self._setting_variables().items()}
+        data.update(font=self.style_keys[self.font_combo.current()],formula_font=self.style_keys[self.fmfont_combo.current()],preset=self.preset_var.get())
+        return data
+
+    def _apply_settings_payload(self,data,source):
+        self._applying_profile=True
+        missing=[]
+        try:
+            for key,var in self._setting_variables().items():
+                if key in data:var.set('PDF 文件' if key=='export_format' and data[key]=='PNG + PDF' else data[key])
+            for key,combo in [('font',self.font_combo),('formula_font',self.fmfont_combo)]:
+                value=data.get(key,'WenKai')
+                if value not in self.style_keys or not font_manager.installed(value):
+                    missing.append(str(value));value='WenKai'
+                combo.current(self.style_keys.index(value))
+            self.preset_var.set(data.get('preset','自定义'))
+        finally:self._applying_profile=False
+        self.settings_source.configure(text='设置来源：'+source+('（缺失字体已回退文楷）' if missing else ''))
+        self._approved_snapshot=None;self.go_btn.configure(state='disabled')
+        if self.compare_view and not self.compare_view.closed:self.compare_view.schedule()
+        if missing:self.status.configure(text='配置中的字体未安装：'+', '.join(missing)+'；原保存配置未自动覆盖。')
+
+    def _select_document(self,event=None):
+        if self._applying_profile or not self.jobs:return
+        selection=self.job_tree.selection()
+        job=next((j for j in self.jobs if selection and j['id']==selection[0]),self.jobs[0])
+        path=job['path']
+        if path==self._active_document:return
+        if self._active_document:self._document_sessions[self._active_document]=self._settings_payload()
+        self._active_document=path
+        if path in self._document_sessions:
+            data=self._document_sessions[path];source='当前文档的临时调整'
+        else:
+            try:data,note=self.document_settings.load(path)
+            except OSError:data,note={},'无法读取文档身份，未套用配置'
+            source='文档专属' if data else '全局默认'
+            if note:source+='；'+note
+            data=dict(self._global_preferences,**data)
+        self._apply_settings_payload(data,source)
+
+    def _save_document_settings(self):
+        if not self._active_document:self.status.configure(text='请先选择文档。');return
+        try:
+            self.document_settings.save(self._active_document,self._settings_payload())
+            self._document_sessions.pop(self._active_document,None)
+            self.settings_source.configure(text='设置来源：文档专属（已保存）')
+            self._approved_snapshot=None;self.go_btn.configure(state='disabled')
+        except (OSError,ValueError) as exc:self.status.configure(text='文档设置未保存：'+str(exc))
+
+    def _restore_document_settings(self):
+        if not self._active_document:return
+        try:data,note=self.document_settings.load(self._active_document)
+        except OSError:data,note={},'文档不存在或无法读取'
+        self._document_sessions.pop(self._active_document,None)
+        self._apply_settings_payload(dict(self._global_preferences,**data),('文档专属' if data else '全局默认')+('；'+note if note else ''))
+
+    def _reset_document_settings(self):
+        if not self._active_document:return
+        try:note=self.document_settings.reset(self._active_document)
+        except OSError as exc:self.status.configure(text='重置未完成：'+str(exc));return
+        self._document_sessions.pop(self._active_document,None)
+        self._apply_settings_payload(self._global_preferences,'全局默认（当前文档配置已重置）'+('；'+note if note else ''))
+
+    def _set_global_default(self):
+        self._global_preferences=self._settings_payload()
+        save_settings(self._global_preferences,self.settings_file)
+        self.settings_source.configure(text='设置来源：全局默认（已用当前参数更新）')
+
+    def _open_comparison(self):
+        if self.compare_view and self.compare_view.closed and self.compare_view.busy:
+            self.root.after(100,self._open_comparison);return
+        if self._closing:return
+        if self.compare_view and not self.compare_view.closed:
+            self.compare_view.window.lift();return
+        from comparison import ComparisonWindow
+        self.compare_view=ComparisonWindow(self)
+
     def _settings_changed(self, *args):
+        if self._applying_profile:return
+        if self._active_document:self.settings_source.configure(text="设置来源：当前文档临时调整（点击保存文档可持久保存）")
         self._approved_snapshot = None
         self.go_btn.configure(state='disabled')
+        if self.compare_view and not self.compare_view.closed:self.compare_view.schedule()
         if self.files and not self.busy:
             self.status.configure(text='设置已更新，请先快速预览，再确认生成。')
         output_variables = {str(self.out_var), str(self.export_var)}
@@ -361,10 +458,12 @@ class App:
 
     def _save_preferences(self):
         self._save_id = None
-        data = {key: var.get() for key, var in self._setting_variables().items()}
-        data.update(font=self.style_keys[self.font_combo.current()],
-                    formula_font=self.style_keys[self.fmfont_combo.current()],
-                    preset=self.preset_var.get())
+        if self._active_document:
+            self._document_sessions[self._active_document]=self._settings_payload()
+            self._global_preferences['outdir']=self.out_var.get()
+            data=self._global_preferences
+        else:
+            data=self._settings_payload();self._global_preferences=data
         try:
             save_settings(data, self.settings_file)
         except OSError as exc:
@@ -383,6 +482,7 @@ class App:
                     self._setting_variables()[key].set(value)
         finally:
             self._applying = False
+        self.settings_source.configure(text="设置来源：预设 · "+self.preset_var.get()+"（当前会话；保存文档后持久生效）")
         self._settings_changed_preset()
 
     def _settings_changed_preset(self):
@@ -391,11 +491,12 @@ class App:
     def _close(self):
         self._save_preferences()
         self._closing = True
+        if self.compare_view and not self.compare_view.closed:self.compare_view.close()
         self.cancel_event.set()
         self._finish_close()
 
     def _finish_close(self):
-        if self.busy:
+        if self.busy or (self.compare_view and self.compare_view.busy):
             self.root.after(100, self._finish_close)
         else:
             self._preview_dir.cleanup()
@@ -450,6 +551,8 @@ class App:
         name = os.path.basename(self.files[0])
         if len(name) > 26:
             name = name[:23] + '…'
+        if self.jobs:
+            self.job_tree.selection_set(self.jobs[0]['id']);self._select_document()
         self.drop.configure(text=f"已选 {len(self.files)} 份文档 · {name}", fg=ACCENT)
 
     def _choose_out(self):
@@ -494,12 +597,34 @@ class App:
                     formula=bool(self.formula_var.get()),
                     formula_font=os.fspath(font_manager.font_path(self.style_keys[self.fmfont_combo.current()])))
 
+    def _job_parameters(self,job):
+        notes=[]
+        if job['path']==self._active_document:data=self._settings_payload()
+        elif job['path'] in self._document_sessions:data=self._document_sessions[job['path']]
+        else:
+            try:saved,note=self.document_settings.load(job['path'])
+            except OSError:saved,note={},'无法读取文档配置，使用全局默认'
+            if note:notes.append(note)
+            data=dict(self._global_preferences,**saved)
+        params=self._parameters().copy()
+        for key in ('font_size','ruled','line_spacing_ratio','word_spacing','jitter','glyph_variation','formula_variation','table_variation','diagram_variation','formula'):
+            if key in data:params[key]=data[key]
+        for key in ('font','formula_font'):
+            font=data.get(key,'WenKai')
+            if font not in self.style_keys or not font_manager.installed(font):
+                notes.append(f'文档配置中的 {key} 字体缺失，已替代为文楷');font='WenKai'
+            params[key]=font if key=='font' else os.fspath(font_manager.font_path(font))
+        export='pdf' if data.get('export_format') in {'PDF 文件','PNG + PDF'} else 'png'
+        return params,export,notes
+
     def _snapshot(self):
         stats = []
         for path in self.files:
             try: stats.append(fingerprint(path, self._parameters()))
             except OSError: stats.append((path, None))
-        return repr((stats, self._parameters(), self.out_var.get(), self.export_var.get()))
+        try:config_stamp=self.document_settings.path.stat().st_mtime_ns
+        except OSError:config_stamp=None
+        return repr((stats,self._parameters(),self.out_var.get(),self.export_var.get(),config_stamp))
 
     def _preview_one(self, page=1, force=False):
         if self.busy:
@@ -615,8 +740,13 @@ class App:
         params = dict(self._parameters(), outdir=self.out_var.get().strip() or None,
                       export_format='pdf' if self.export_var.get() in {'PDF 文件', 'PNG + PDF'} else 'png',
                       preview_root=os.path.join(self._preview_dir.name, 'completed'))
-        self._batch_keys = {job['id']: fingerprint(job['path'], self._parameters()) for job in self.jobs}
-        jobs = [job.copy() for job in self.jobs if not retry or job['status'] == '失败']
+        self._batch_keys={}
+        jobs=[]
+        for job in self.jobs:
+            if retry and job['status']!='失败':continue
+            render_params,export,notes=self._job_parameters(job)
+            self._batch_keys[job['id']]=fingerprint(job['path'],render_params)
+            jobs.append(dict(job,params=dict(render_params,export_format=export),parameter_notes=notes))
         self.prog.configure(maximum=max(1, len(jobs)))
         self._batch_completed = 0
         threading.Thread(target=self._worker, args=(jobs, params),

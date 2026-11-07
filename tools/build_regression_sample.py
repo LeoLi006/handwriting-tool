@@ -153,6 +153,9 @@ $$\unsupportedcommand{x}$$
 {"xlim":[0,0],"run":"print('NEVER EXECUTE')"}
 ```
 '''
+    from extended_sample import EXTENDED, COMPARISON
+    text += EXTENDED
+    (root/'参数对照.md').write_text(COMPARISON,encoding='utf-8')
     (root/'综合回归.md').write_text(text, encoding='utf-8')
     return root/'综合回归.md'
 

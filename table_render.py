@@ -1,5 +1,56 @@
 """Handwritten table cells, formula baselines, page splits and repeated headers."""
 from PIL import Image
+import re
+import warnings
+from readable_layout import text_tokens
+
+
+def column_widths(renderer, rows, size, pad):
+    """Allocate intrinsic minimums, then distribute remaining width by demand."""
+    count=len(rows[0]); available=renderer.w-renderer.left-renderer.right
+    minimum=[size+2*pad]*count; preferred=minimum.copy()
+    measured_math=[0]
+    old=renderer.size; renderer.size=size
+    try:
+        for row_index,row in enumerate(rows):
+            renderer.check_cancel()
+            for col,text in enumerate(row):
+                natural=0; longest=size
+                position=0
+                pieces=[]
+                for match in re.finditer(r'(?<!\\)\$(.+?)(?<!\\)\$',text):
+                    pieces.append(('text',text[position:match.start()]))
+                    pieces.append(('math',match[1]));position=match.end()
+                pieces.append(('text',text[position:]))
+                for kind,value in pieces:
+                    if kind=='math':
+                        # Width planning never consumes handwriting randomness.
+                        # Bound expensive formula measurement; remaining cells
+                        # use an estimate and retain exact layout at paint time.
+                        formula_width=renderer._adv(re.sub(r'\\[A-Za-z]+','x',value),size)
+                        if measured_math[0]<16:
+                            measured_math[0]+=1
+                            try:
+                                import formula
+                                with warnings.catch_warnings(record=True):
+                                    formula_width=formula.render_formula(value,renderer.ffont,size,renderer.dpi).width
+                            except Exception: pass
+                        natural+=formula_width;longest=max(longest,formula_width)
+                    else:
+                        natural+=renderer._adv(value,size)
+                        longest=max(longest,max((renderer._adv(t,size) for t in text_tokens(value)),default=0))
+                if row_index==0:longest=max(longest,natural)
+                minimum[col]=max(minimum[col],min(available*.38,longest+2*pad))
+                preferred[col]=max(preferred[col],min(available*.7,natural+2*pad))
+    finally: renderer.size=old
+    if sum(minimum)>=available:
+        widths=[max(1,int(x*available/sum(minimum))) for x in minimum]
+    else:
+        demand=[max(1,p-m) for p,m in zip(preferred,minimum)]
+        extra=available-sum(minimum)
+        widths=[int(m+extra*d/sum(demand)) for m,d in zip(minimum,demand)]
+    widths[-1]+=available-sum(widths)
+    return widths
 
 
 def _cell_lines(renderer, text, width, size):
@@ -31,13 +82,15 @@ def _cell_lines(renderer, text, width, size):
                 x += value.width + size*.12
                 above, below = max(above, value.above), max(below, value.depth)
             else:
-                for char in value:
-                    if char == '\n':
+                for token in text_tokens(value):
+                    if token == '\n':
                         finish(); continue
-                    advance = renderer._adv(char, size)
-                    if x and x + advance > width:
-                        finish()
-                    parts.append(('text', char, x)); x += advance
+                    fragments=list(token) if renderer._adv(token,size)>width else [token]
+                    for fragment in fragments:
+                        advance=renderer._adv(fragment,size)
+                        if x and x+advance>width: finish()
+                        for char in fragment:
+                            parts.append(('text',char,x)); x+=renderer._adv(char,size)
         if parts or not lines:
             finish()
     finally:
@@ -52,20 +105,22 @@ def draw_table(renderer, rows):
     pad = max(7, round(size*.3))
     columns = len(rows[0])
     width = renderer.w - renderer.left - renderer.right
-    widths = [width//columns]*columns
-    widths[-1] += width-sum(widths)
+    widths = column_widths(renderer, rows, size, pad)
     origin = renderer.location
     source_line = renderer.source_line
-    if min(widths)-2*pad < size*2.2:
+    def fields(body_rows,start=2):
+        for row_index,row in enumerate(body_rows,start):
+            renderer.source_line=source_line+row_index
+            renderer._draw_flow([('text',f'表格第 {row_index-1} 条')],size)
+            for header,value in zip(rows[0],row):
+                renderer._draw_flow(renderer._inline_items(f'{header}：{value}'),size,indent=size)
+        renderer.source_line=source_line
+    if min(widths)-2*pad < size*1.5:
         renderer.issue('警告', '表格密度', f'{columns} 列导致单元格过窄，已逐字换行；建议拆分表格或减少列数')
     if min(widths)-2*pad < size:
         renderer.issue('替代', '超宽表格', '列宽不足以容纳一个中文字符，已采用逐行字段显示，保留所有单元格')
-        for row_index, row in enumerate(rows[1:], 2):
-            renderer.source_line=source_line+row_index
-            renderer._draw_flow([('text',f'表格第 {row_index-1} 条')],size)
-            for header, value in zip(rows[0],row):
-                renderer._draw_flow(renderer._inline_items(f'{header}：{value}'),size,indent=size)
-        renderer.source_line=source_line
+        if len(rows)==1:renderer._draw_flow(renderer._inline_items(' / '.join(rows[0])),size)
+        fields(rows[1:])
         return
 
     def plan(row, row_index):
@@ -109,7 +164,9 @@ def draw_table(renderer, rows):
     header_height = height(header)
     body_height = renderer.h-renderer.top-renderer.bottom
     if header_height > body_height*.6:
-        raise ValueError('表头过长，无法在一页内显示，请缩短表头或拆分表格。')
+        renderer.issue('替代','过长表头','表头过长，已采用逐行字段显示，保留全部表头与单元格文字')
+        if len(rows)==1:renderer._draw_flow(renderer._inline_items(' / '.join(rows[0])),size)
+        fields(rows[1:]);return
 
     def paint_header():
         paint(header, [0]*columns, [len(cell) for cell in header], True)
@@ -134,7 +191,17 @@ def draw_table(renderer, rows):
                     used += cell[end]['height']; end += 1
                 ends.append(end)
             if ends == offsets:
-                raise ValueError('表格单元格内容过高，请减小字号或拆分公式。')
+                renderer.issue('替代','过高单元格','单元格与重复表头无法同时容纳，剩余行已采用逐行字段显示')
+                # No part of this row has been painted if there was no progress.
+                if not any(offsets):fields(rows[row_index-1:],row_index)
+                else:
+                    # A split row: preserve just its remaining planned lines.
+                    for column,(cell,start) in enumerate(zip(cells,offsets),1):
+                        renderer._draw_flow([('text',f'续行/第 {column} 列')],size)
+                        for line in cell[start:]:
+                            renderer._draw_flow([(kind,value) for kind,value,_ in line['parts']],size)
+                    fields(rows[row_index:],row_index+1)
+                return
             paint(cells, offsets, ends)
             offsets = ends
     renderer.location = origin

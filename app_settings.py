@@ -20,6 +20,7 @@ LIMITS = dict(font_size=(24, 64), line_spacing_ratio=(0.9, 2.6),
 
 
 def settings_path():
+    if os.environ.get('MOJIAN_STATE_DIR'):return Path(os.environ['MOJIAN_STATE_DIR'])/'settings.json'
     base = Path(os.environ.get('APPDATA', Path.home() / '.config'))
     return base / 'Mojian' / 'settings.json'
 

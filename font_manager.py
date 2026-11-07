@@ -15,6 +15,7 @@ def catalog():
 
 
 def cache_directory():
+    if os.environ.get('MOJIAN_STATE_DIR'):return Path(os.environ['MOJIAN_STATE_DIR'])/'fonts'
     return Path(os.environ.get('LOCALAPPDATA', Path.home() / '.cache')) / 'Mojian' / 'fonts'
 
 

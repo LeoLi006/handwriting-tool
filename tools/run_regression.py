@@ -31,7 +31,8 @@ def run(output, poppler=None):
     if not identical or not cached or len(preview['paths'])!=1:
         raise AssertionError('单页预览与最终第一页不一致，或未复用缓存')
     assert len(list((output/'pdf').iterdir()))==1, 'PDF-only 输出不应创建结果文件夹/额外文件'
-    report=dict(source=str(source),pages=len(png),png=list(png),pdf=pdf[0],
+    report=dict(source='examples/regression/综合回归.md',pages=len(png),
+                png=[Path(path).relative_to(output).as_posix() for path in png],pdf=Path(pdf[0]).relative_to(output).as_posix(),
                 preview_matches=identical,preview_cache_hit=cached,issues=png.issues,
                 visual_review='待逐页人工检查；自动检查不证明排版正确')
     if poppler:

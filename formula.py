@@ -218,6 +218,7 @@ class Formula:
 
 
 _cache = {}
+_font_versions = {}
 
 _ENV_FIND = re.compile(
     r"\\begin\{(cases|aligned|alignedat|gathered|split|matrix|pmatrix|"
@@ -377,7 +378,16 @@ def _frame_formula(formula, font_size, color):
 def render_formula(latex: str, font_path: str = DEFAULT_FONT, font_size: int = 40,
                    dpi: int = 150, color=(28, 30, 66)) -> Formula:
     """渲染单个公式, 返回 Formula。font_size 为像素(与正文一致)。"""
-    key = (latex.strip(), font_path, font_size, dpi, tuple(color))
+    stat=os.stat(font_path)
+    stamp=(stat.st_mtime_ns,stat.st_size)
+    previous=_font_versions.get(font_path)
+    if previous is not None and previous!=stamp:
+        _cache.clear();_family_cache.pop(font_path,None)
+        fm.fontManager.ttflist[:]=[entry for entry in fm.fontManager.ttflist if os.path.normcase(entry.fname)!=os.path.normcase(font_path)]
+        for cache in (getattr(fm,'_get_font',None),getattr(fm.fontManager,'_findfont_cached',None)):
+            if hasattr(cache,'cache_clear'):cache.cache_clear()
+    _font_versions[font_path]=stamp
+    key = (latex.strip(), font_path, font_size, dpi, tuple(color),stamp)
     if key in _cache:
         return _cache[key]
 

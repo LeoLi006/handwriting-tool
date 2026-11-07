@@ -4,7 +4,9 @@
 
 ## 开始使用
 
-需要带 tkinter 的 Python 3.10+。下载仓库的 ZIP 并解压，在项目目录运行：
+**Windows 解压即用版**：`handwriting-tool-windows-x64.zip` 已带 Python 3.13.17、Tcl/Tk、基础字体及全部必要依赖，接收者不必安装 Python、Office 或 LaTeX，首次基础转换可离线。完整解压到可写目录后双击 `启动GUI.vbs`。目前只对 Windows x64 做同机隔离验证，未在干净虚拟机验证。
+
+**基础字体源码版**：需要带 tkinter 的 Python 3.10+。下载源码 ZIP 并解压，在项目目录运行：
 
 ```bash
 python -m pip install -r requirements.txt
@@ -21,6 +23,10 @@ Windows 请双击 **`启动GUI.vbs`**，直接打开 GUI，不显示终端。`�
 
 窗口缩放时，界面文字、控件行高与侧栏会一起缩放，文档字号保持不变。设置会自动保存。正文位置/旋转随机度与字形变化强度独立：排版想整齐可将前者设为 0～0.2，后者设为 1～1.5。字形变化基于原字体，不会生成新的笔顺。
 
+全局默认、预设和文档专属设置有明确来源标记。选择文档时优先恢复该文档保存的设置；当前修改是临时调整，点击“保存文档”持久保存，恢复/重置只针对当前文档。“当前参数设为全局默认”才会用文档当前参数覆盖全局默认。配置在应用目录内的配置区，不向源文档旁写配置；详见说明书。
+
+“打开调整前后对照”使用固定原创短样本，支持并排查看、统一页码/缩放、列出变化参数及“当前设为新基准”。滑块停止 500 ms 后仅更新短示例，正式文档仍需明确预览与确认。
+
 ## 预览、批量与取消
 
 - 预览在排满第一页时停止绘制，后面的页面和公式不会继续排版；读取文件和解析正文仍需进行。
@@ -36,6 +42,8 @@ Windows 请双击 **`启动GUI.vbs`**，直接打开 GUI，不显示终端。`�
 ## 表格、示意图与方框答案
 
 - Markdown 表格按网格绘制，单元格支持文字与数学公式；自动换行，跨页重复表头。
+- 列宽按内容需求分配，兼顾表头、短词、数字、单位及公式；英文单词和短表达尽量整体换行，只有超过整列宽度才拆分。超长表头或过窄列采用带提示的逐行字段替代，不丢掉单元格。
+- 超宽独立公式优先在保守识别的顶层等号/加减号前分行，保留全部运算符和原顺序；分数、根式、脚标、环境与括号内部不拆。不能可靠分行时仍等比缩放，报告原因与比例。
 - Word 表格在实际转写时也保留表格结构；复杂合并单元格按文字网格展开。
 - 围栏中的字符示意图不再删除。`text` / `ascii` / `diagram` / `polezero` 中的坐标轴、边界线、箭头、× 和 ○ 会按原文位置绘制，中文标签保留。
 - 支持 `\boxed{...}` / `\fbox{...}`，包括并列方框和 aligned 中的方框答案。
@@ -46,6 +54,8 @@ Windows 请双击 **`启动GUI.vbs`**，直接打开 GUI，不显示终端。`�
 - 自动限制超宽/超高对象、保护页底标题，检查内容区域重叠和边界，提示过密表格、缺字及图与说明跨页。它不验证数学结论，也不能替代视觉检查。
 
 这是对字符示意图的重绘，不会识别截图、扫描图或任意绘图脚本。复杂 LaTeX 不支持时仍会列出问题，供核对。
+
+新增显式排版语法：`<!-- caption: 图注 -->` 紧跟图形；`<!-- keep-next -->` 放在要绑定的前两块之前；`<!-- keep-start -->` / `<!-- keep-end -->` 包围同页组合；`<!-- pagebreak -->` 手动分页。能放进一页的组合只测量一次并复用绘制结果；过大组合按原顺序降级分页并提示。手动分页优先，连续/末尾标记不制造空白页。普通段落不会因文字含义被自动绑定。
 
 ## 输出管理
 
@@ -103,11 +113,19 @@ python -m unittest discover -s tests -v
 python tools/run_regression.py --output output/regression
 python tools/check_gui.py
 python tools/build_portable.py
+python tools/build_windows.py
+python tools/verify_windows.py
+python tools/render_comparison.py
+python tools/check_document_profiles.py
 ```
 
 回归入口：[原创综合 Markdown](examples/regression/综合回归.md)、[逐项检查记录](docs/综合回归检查.md)。`build_regression_sample.py` 可重新生成同样的 Markdown 和三张原创本地图片。回归命令分别导出 PNG、单文件 PDF，验证首页一致与缓存命中；安装 Poppler 后可加 `--poppler 路径` 检查所有 PDF 页面。仍需逐页核对视觉结果。
 
-分享命令输出 `dist/handwriting-tool-base.zip` 和大小/校验清单，仅携带两款基础字体、代码、说明与原创样本，不含 Git 历史、可选字体、Python 或运行依赖。完整解压后双击 `启动GUI.vbs`。接收者需先安装带 tkinter 的 Python 3.10+；首次补齐依赖/下载可选字体需要联网，之后可离线使用。不是免 Python 的独立 EXE。已移除未使用的 handright 依赖。
+基础分享命令输出 `dist/handwriting-tool-base.zip`，仅含两款基础字体、代码、说明与原创样本，需要接收者已有 Python。Windows 构建命令另输出 `dist/handwriting-tool-windows-x64.zip`，包含运行时和依赖。两包均有体积及 SHA-256 JSON 清单；不包含 Git 历史、私人作业、用户配置或字体缓存。
+
+Windows 构建使用官方完整 Python ZIP，按官方 SHA-256 校验；12 个直接/间接依赖的 wheel 文件及 SHA-256 锁定在 `tools/windows-wheels.json`。源码 ZIP 和 Windows ZIP 使用固定打包时间；打包剔除构建绝对路径、字节码、pip、测试库和用户状态，附带字体及依赖授权、版本和文件清单。更新依赖时显式运行 `python tools/build_windows.py --resolve-lock`，然后重新验证；首次构建需要联网，缓存完整后可离线重建。
+
+本轮逐项结果与验证边界见 [2026-11-07 改进检查](docs/改进检查-20261107.md)。历史 12 页检查记录保留作为旧版对照，当前扩展样本为 17 页。
 
 核心模块：`gui.py`（界面）、`app_settings.py`（设置/预设）、`handwriting.py`（排版）、`batch_tasks.py`（批量任务）、`managed_output.py`（结果发布）、`word_reader.py`（Word）、`formula.py`（公式）、`font_manager.py`（字体）、`pdf_export.py`（PDF）。
 

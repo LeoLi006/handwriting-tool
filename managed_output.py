@@ -85,10 +85,10 @@ def document_directory(source, root=None):
     return base / f'{stem}--{suffix}'
 
 
-def _retire_previous(directory, previous, source):
+def _retire_previous(directory, previous, source, legacy_source=None):
     """Only unlink names recorded by our old manifest; leave user-added files."""
     name = previous.get('generation', '')
-    if previous.get('source') != source or not re.fullmatch(r'run-[0-9a-f]{32}', name):
+    if previous.get('source') not in {source,legacy_source} or not re.fullmatch(r'run-[0-9a-f]{32}', name):
         return
     old = directory / name
     if old.is_symlink() or old.resolve().parent != directory.resolve():
@@ -96,7 +96,7 @@ def _retire_previous(directory, previous, source):
     marker = old / '.generation.json'
     try:
         data = json.loads(marker.read_text(encoding='utf-8'))
-        if not isinstance(data, dict) or data.get('source') != source:
+        if not isinstance(data, dict) or data.get('source') != previous.get('source'):
             return
         for name in data.get('generated', []):
             if isinstance(name, str) and Path(name).name == name and name not in {'.', '..'}:
@@ -120,7 +120,8 @@ def generate_document(source, outdir=None, cancel=None, page_progress=None,
         raise ValueError('输出格式必须为 png、pdf 或 both')
     directory = document_directory(source, outdir)
     directory.mkdir(parents=True, exist_ok=True)
-    source_key = os.path.normcase(str(Path(source).resolve()))
+    legacy_source = os.path.normcase(str(Path(source).resolve()))
+    source_key = 'sha256:'+hashlib.sha256(legacy_source.encode('utf-8')).hexdigest()
     latest = directory / 'latest.json'
     try:
         previous = json.loads(latest.read_text(encoding='utf-8'))
@@ -162,7 +163,7 @@ def generate_document(source, outdir=None, cancel=None, page_progress=None,
             shutil.rmtree(generation)
             pointer.unlink(missing_ok=True)
             raise
-        _retire_previous(directory, previous, source_key)
+        _retire_previous(directory, previous, source_key, legacy_source)
         for issue in issues:
             warnings.warn(issue, UserWarning)
         return ConversionResult([str(generation / name) for name in data['pages']], issues=structured_issues)
