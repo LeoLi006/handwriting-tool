@@ -15,6 +15,7 @@ def build(destination=None):
     files += [ROOT/name for name in ('requirements.txt','README.md','使用说明书.md','启动GUI.vbs','launch_gui.ps1')]
     files += list((ROOT/'tests').glob('*.py'))+list((ROOT/'tools').glob('*.py'))
     files += list((ROOT/'docs').glob('*.md'))
+    files += [p for p in (ROOT/'integrations'/'leo').glob('*') if p.suffix in {'.py','.ps1','.json','.md'}]
     files += [p for p in (ROOT/'tools'/'windows-pins.txt',ROOT/'tools'/'windows-wheels.json') if p.is_file()]
     if (ROOT/'启动GUI.bat').is_file(): files.append(ROOT/'启动GUI.bat')
     files += [p for p in (ROOT/'examples').rglob('*') if p.is_file() and p.suffix in {'.md','.png'}]

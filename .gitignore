@@ -6,6 +6,7 @@ venv/
 .env.*
 tmp/
 dist/
+.leo-local/
 output/
 fonts/_merged_*.ttf
 fonts/*.ttf
