@@ -4,7 +4,7 @@
 
 ## 开始使用
 
-**Leo 快捷入口**：可将墨笺接入 [Leo 桌面伙伴](https://github.com/LeoLi006/leo-desktop) 的应用模块，在桌宠快捷栏或搜索中直接打开。沿用墨笺独立窗口，本地转换，不需要模型 API；支持停用/移除入口。提供本机接入脚本与不含个人路径的数据模块包，见 [Leo 接入说明](integrations/leo/README.md)。
+**Leo 快捷入口**：可将墨笺接入 [Leo 桌面伙伴](https://github.com/LeoLi006/leo-desktop) 的应用模块，在桌宠快捷栏或搜索中直接打开。沿用墨笺独立窗口，本地转换，不需要模型 API；支持停用/移除入口。另提供单 Markdown 文件导入/预览接口（不自动生成、不安装依赖），以及本机接入脚本与不含个人路径的数据模块包，见 [Leo 接入说明](integrations/leo/README.md)。
 
 **Windows 解压即用版**：`handwriting-tool-windows-x64.zip` 已带 Python 3.13.17、Tcl/Tk、基础字体及全部必要依赖，接收者不必安装 Python、Office 或 LaTeX，首次基础转换可离线。完整解压到可写目录后双击 `启动GUI.vbs`。目前只对 Windows x64 做同机隔离验证，未在干净虚拟机验证。
 

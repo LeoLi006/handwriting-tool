@@ -996,7 +996,7 @@ class App:
             pass
 
 
-def main():
+def main(import_request=None):
     if sys.platform == 'win32':
         try:
             import ctypes
@@ -1004,9 +1004,19 @@ def main():
         except (AttributeError, OSError):
             pass
     root = TkinterDnD.Tk() if DND_OK else tk.Tk()
-    App(root)
+    app = App(root)
+    if import_request is not None:
+        from import_handoff import import_into
+        def receive_import():
+            try:
+                import_into(app, import_request)
+            except Exception as exc:
+                messagebox.showerror("墨笺 · 文件导入失败", str(exc), parent=root)
+        root.after(80, receive_import)
     root.mainloop()
 
 
 if __name__ == "__main__":
-    main()
+    from import_handoff import parse_startup
+    request, _ = parse_startup(sys.argv[1:])
+    main(request)

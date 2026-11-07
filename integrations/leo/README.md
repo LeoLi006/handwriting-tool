@@ -30,10 +30,32 @@ python integrations/leo/install.py --leo-dir "你的Leo安装目录"
 3. 或在应用模块窗口导入本目录的 `mojian.leoapp.json`，在预览中选择刚建立的快捷方式。包只含标识、版本和依赖，不包含程序、脚本或本机路径。
 4. 入口默认位于应用搜索窗口的顶部快捷栏，溢出时在“更多”；右键菜单也可打开。显示模式在设置 → 功能 → 入口显示调整。
 
-停用或移除：在 Leo 的应用模块中操作，只移除入口，不卸载墨笺或删除文档。暂不支持从 Leo 自动转换、无人值守导出，或拖文件直接传入墨笺；请在墨笺窗口内拖入文档并明确预览/确认。
+停用或移除：在 Leo 的应用模块中操作，只移除入口，不卸载墨笺或删除文档。原快捷入口仍只启动窗口。新版可通过下述显式导入接口交接一个 Markdown 文件；不支持无人值守转换或导出。
 
 ## 开发与验证
 
 `mojian.leoapp.json` 复用 `LeoApplicationPackage/1`；固定包身份用于去重，本机启动信息保留在 Leo 的 `LocalApplication` 配置中。图标引用 `glyph:notes`，由 Leo 按当前主题渲染。
 
 运行 `python -m unittest discover -s tests -p test_leo_integration.py` 检查隔离配置合并、未知字段保留、重复接入、身份冲突、并发变化和保存失败。夹具不读取真实个人配置或启动外部应用。Windows 接入后还应人工点击一次入口确认 GUI 正常出现；未实测的部分不要标为通过。
+
+## Markdown 文件交接（需新版 Leo 配置）
+
+墨笺新增单文件 GUI 接口，无需修改系统默认关联：
+
+```powershell
+python gui_launcher.py --no-install --import-file "某个 Markdown 文件的绝对路径.md"
+```
+
+仅接收现存的 `.md` / `.markdown` 文件。进入原 GUI 文档列表并开始预览，**不调用正式生成**。在墨笺内选择/检查模板、字体、输出位置，再明确确认生成。原始 Markdown 不被改写。双击原 VBS 或快捷方式仍按原流程启动；VBS 不转发参数，文件处理应使用上述 Python 入口。导入模式总是禁止自动安装依赖；请选择依赖齐全的本机 Python，不会代装环境。
+
+Leo 中复用“应用打开能力”：程序指定本机 `pythonw.exe`，工作目录为墨笺目录；启动参数可设为引号包裹的 `gui_launcher.py` 绝对路径加 `--no-install`。处理方式选“文件导入交接”，导入脚本指定同一个 `gui_launcher.py`，扩展名 `.md .markdown`，文件夹/多文件关闭。所有路径只存本机配置，不加入模块分享包。
+
+### 本地回执协议 `LeoFileImport/1`
+
+宿主在一次请求的私有临时目录写 UTF-8 JSON，然后传 `--import-request <request.json绝对路径>`。字段为 `protocol: "LeoFileImport/1"`、`requestId: "32位小写十六进制标识"`、`input: "现存Markdown绝对路径"`。最大16KB；单文件，不接受命令或输出样式。
+
+墨笺在完成 GUI 文档列表导入后，以独占创建方式写同目录 `request.receipt.json`（一般规则是将请求文件扩展名改为 `.receipt.json`）。回执复述 protocol/requestId/input，`state` 为 `imported` 或 `failed`；失败只附简短 `code`。**imported 不代表预览成功，更不代表转换完成**。已有回执不覆盖或重放。宿主只在标识和输入匹配后确认导入；超时仅显示未确认，不自动重试生成。取消等待不能撤回工具已经接收的文件。
+
+### 定向验证
+
+`python -B -m unittest discover -s tests -p test_import_handoff.py` 检查参数、单文件、失败、回执及不覆盖。依赖齐全并可运行 GUI 时，显式设置 `MOJIAN_GUI_TEST=1` 后运行 `test_import_handoff_gui.py`；它使用隔离文档和配置，验证真实 GUI 导入，不调用正式生成，不读取个人文档。

@@ -8,13 +8,16 @@ import traceback
 
 
 def main():
+    from import_handoff import parse_startup
     base = Path(__file__).resolve().parent
     state = Path(os.environ['MOJIAN_STATE_DIR']) if os.environ.get('MOJIAN_STATE_DIR') else Path(os.environ.get('LOCALAPPDATA', Path.home()/'.cache'))/'Mojian'
     state.mkdir(parents=True, exist_ok=True)
     log_path = state/'startup.log'
     log = log_path.open('w', encoding='utf-8', buffering=1)
     sys.stdout = sys.stderr = log
+    request = None
     try:
+        request, no_install = parse_startup(sys.argv[1:])
         if sys.platform == 'win32':
             import ctypes
             try:
@@ -30,8 +33,8 @@ def main():
                 raise RuntimeError(f'基础字体缺失：{filename}。请完整解压分享包，不要直接在压缩包内启动。')
         missing = [name for name in ('fontTools', 'PIL', 'matplotlib', 'tkinterdnd2')
                    if importlib.util.find_spec(name) is None]
-        if missing and os.environ.get('MOJIAN_PORTABLE'):
-            raise RuntimeError('离线包缺少运行依赖：'+', '.join(missing)+'。请重新完整解压离线包，不需要安装 Python 或联网补依赖。')
+        if missing and (no_install or os.environ.get('MOJIAN_PORTABLE')):
+            raise RuntimeError('缺少运行依赖：'+', '.join(missing)+'。本次启动禁止自动安装；请使用依赖齐全的环境。')
         if missing:
             root = tk.Tk(); root.title('墨笺 · 首次启动')
             root.geometry('520x240'); root.resizable(False, False)
@@ -60,8 +63,13 @@ def main():
             if process.returncode:
                 raise RuntimeError(f'依赖安装未完成（退出码 {process.returncode}）。请检查网络或 Python 写入权限。\n可手动运行："{sys.executable}" -m pip install -r "{base / "requirements.txt"}"\n详细日志：{log_path}')
         import gui
-        gui.main()
+        gui.main(request)
     except (Exception, SystemExit) as exc:
+        if request is not None and request.receipt is not None and not request.receipt.exists():
+            try:
+                request.acknowledge("failed", "startup_failed")
+            except OSError:
+                pass
         traceback.print_exc()
         try:
             import tkinter as tk
