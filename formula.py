@@ -80,6 +80,12 @@ _CMD_MAP = {
     "left": "left", "right": "right",
 }
 
+# mathtext has no TeX fixed-size delimiter commands. Keep the delimiter itself;
+# do not turn these into left/right, since fixed-size commands may be unpaired.
+for _size in ('big', 'Big', 'bigg', 'Bigg'):
+    for _side in ('l', 'r', 'm'):
+        _CMD_MAP[_size + _side] = ''
+
 
 def _match_brace(s, i):
     """s[i]=='{', 返回配对的 '}' 之后的下标。"""
@@ -260,7 +266,7 @@ def _render_environment(env, body, font_path, font_size, dpi, color):
             try:
                 cells.append(render_formula(c, font_path, font_size, dpi, color))
             except Exception as exc:
-                raise ValueError(f'{env} 第 {len(grid)+1} 行、第 {len(cells)+1} 列公式无法渲染：{c}') from exc
+                raise ValueError(f'{env} 第 {len(grid)+1} 行、第 {len(cells)+1} 列公式无法渲染：{c}；原因：{exc}') from exc
         grid.append(cells)
     if not grid:
         raise ValueError("空环境")
